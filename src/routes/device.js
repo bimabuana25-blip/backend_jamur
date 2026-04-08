@@ -78,6 +78,23 @@ router.post('/claim', async (req, res) => {
         .select('device_id, label, location')
         .single()
 
+    // 5. Buat data threshold default otomatis untuk device ini
+    //    Mencegah error 500 saat user pertama kali mengatur batas sensor
+    if (updated?.device_id) {
+        const { error: thresholdErr } = await supabase
+            .from('thresholds')
+            .insert({
+                device_id: updated.device_id,
+                temp_max: 30,
+                hum_max: 80,
+            })
+        if (thresholdErr) {
+            console.warn('[Claim] Gagal membuat threshold default:', thresholdErr.message)
+        } else {
+            console.log(`[Claim] Threshold default dibuat untuk device: ${updated.device_id}`)
+        }
+    }
+
     // Kembalikan info device yang berhasil diklaim ke client (Flutter)
     res.json({ message: 'Device berhasil diklaim', device: updated })
 })

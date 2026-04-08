@@ -27,6 +27,7 @@
 const router = require('express').Router()
 const supabase = require('../supabase/client')
 const { irrigationQueue } = require('../queues/irrigationQueue')
+const { publishRelay } = require('../mqtt/mqttClient')
 
 /**
  * GET /api/schedule/:deviceId
