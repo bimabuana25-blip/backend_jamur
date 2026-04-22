@@ -78,12 +78,14 @@ router.post('/:deviceId', async (req, res) => {
     }
 
     // Langkah 1: Daftarkan job berulang ke BullMQ menggunakan pola cron
+    // PENTING: BullMQ v5+ menggunakan key 'cron' bukan 'pattern' (breaking change)
+    const jobId = `schedule-${deviceId}-${Date.now()}`
     const job = await irrigationQueue.add(
         'irrigate',
         { deviceId, durationSeconds: duration_s },
         {
-            repeat: { pattern: cron },   // cron pattern menentukan kapan job dijalankan
-            jobId: `schedule-${deviceId}-${Date.now()}`, // ID unik untuk tiap jadwal
+            repeat: { cron },   // BullMQ v5+: gunakan 'cron', bukan 'pattern'
+            jobId,              // ID unik untuk tiap jadwal
         }
     )
 
@@ -121,8 +123,9 @@ router.delete('/:id', async (req, res) => {
     if (fetchErr) return res.status(404).json({ error: 'Jadwal tidak ditemukan' })
 
     // Langkah 2: Hapus job dari BullMQ agar tidak dieksekusi lagi
+    // BullMQ v5+: gunakan 'cron', bukan 'pattern'
     await irrigationQueue.removeRepeatable('irrigate', {
-        pattern: schedule.cron,
+        cron: schedule.cron,
         jobId: schedule.bull_job_id,
     })
 
@@ -217,19 +220,21 @@ router.patch('/:id/toggle', async (req, res) => {
 
     if (newStatus) {
         // Jadwal akan DIAKTIFKAN: daftarkan kembali job ke BullMQ
+        // BullMQ v5+: gunakan 'cron', bukan 'pattern'
         const job = await irrigationQueue.add(
             'irrigate',
             { deviceId: schedule.device_id, durationSeconds: schedule.duration_s },
             {
-                repeat: { pattern: schedule.cron },
-                jobId: schedule.bull_job_id, // gunakan ID yang sama agar referensi tidak berubah
+                repeat: { cron: schedule.cron }, // BullMQ v5+: key 'cron'
+                jobId: schedule.bull_job_id,     // gunakan ID yang sama agar referensi tidak berubah
             }
         )
         console.log(`[Schedule] Job ${job.id} diaktifkan kembali`)
     } else {
         // Jadwal akan DINONAKTIFKAN: hapus job dari BullMQ (tapi data DB tetap ada)
+        // BullMQ v5+: gunakan 'cron', bukan 'pattern'
         await irrigationQueue.removeRepeatable('irrigate', {
-            pattern: schedule.cron,
+            cron: schedule.cron,
             jobId: schedule.bull_job_id,
         })
         console.log(`[Schedule] Job ${schedule.bull_job_id} dinonaktifkan`)

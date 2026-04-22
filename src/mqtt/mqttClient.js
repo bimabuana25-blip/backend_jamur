@@ -125,14 +125,17 @@ function connect() {
         }
 
         // Destructure data sensor. Jika ESP32 tidak kirim device_id, pakai default 'esp32-01'
-        const { temp, hum, device_id = 'esp32-01' } = data
-        console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}%`)
+        // relay_state dikirim ESP32 sebagai boolean (true = ON, false = OFF)
+        const { temp, hum, relay_state, device_id = 'esp32-01' } = data
+        console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Relay: ${relay_state}`)
 
         // Langkah 1: Simpan data sensor ke tabel sensor_logs di Supabase
+        // relay_state disimpan agar Flutter bisa sinkronisasi status tombol ON/OFF
         const { error: insertErr } = await supabase.from('sensor_logs').insert({
             device_id,
             temperature: temp,
             humidity: hum,
+            relay_state: relay_state ?? false,
         })
         if (insertErr) {
             console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
