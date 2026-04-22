@@ -7,10 +7,12 @@
  * dan menghubungkan semuanya menjadi satu aplikasi yang siap melayani request.
  *
  * PENTING — Urutan startup sangat penting:
- * 1. connect() → Koneksi MQTT dijalankan PERTAMA karena Worker butuh MQTT.
- * 2. require Worker → Worker diaktifkan SETELAH MQTT siap, agar tidak error
+ * 1. connect() -> Koneksi MQTT dijalankan PERTAMA karena Worker butuh MQTT.
+ * 2. require Worker -> Worker diaktifkan SETELAH MQTT siap, agar tidak error
  *    ketika Worker mencoba publishRelay di job pertamanya.
- * 3. Baru setelah itu Express & semua route dijalankan.
+ * 3. restoreSchedules() -> Baca jadwal aktif dari DB dan daftarkan ulang ke BullMQ.
+ *    Ini menjamin jadwal tidak hilang setelah server restart/redeploy.
+ * 4. Baru setelah itu Express & semua route dijalankan.
  *
  * Kalau urutannya salah (misal Worker dijalankan sebelum MQTT connect),
  * penyiraman pertama bisa gagal karena client MQTT belum siap.
@@ -21,6 +23,7 @@ require('dotenv').config() // Load semua variabel dari file .env ke process.env
 const express = require('express')
 const rateLimit = require('express-rate-limit')
 const { connect } = require('./mqtt/mqttClient')
+const { restoreSchedules } = require('./queues/scheduleRestore')
 
 // LANGKAH 1: Koneksi MQTT ke HiveMQ Cloud terlebih dahulu
 // Ini harus jalan duluan sebelum Worker aktif
@@ -30,7 +33,12 @@ connect()
 // Worker sudah aman dijalankan karena MQTT sudah connect di langkah sebelumnya
 require('./queues/irrigationWorker')
 
-// LANGKAH 3: Inisialisasi aplikasi Express
+// LANGKAH 3: Pulihkan semua jadwal aktif dari Supabase ke BullMQ
+// Ini mengatasi masalah jadwal hilang setelah Railway redeploy atau Redis restart.
+// Semua job lama dibersihkan dulu, lalu jadwal aktif dari DB didaftarkan ulang.
+restoreSchedules()
+
+// LANGKAH 4: Inisialisasi aplikasi Express
 const app = express()
 app.use(express.json()) // Supaya server bisa membaca body request dalam format JSON
 
