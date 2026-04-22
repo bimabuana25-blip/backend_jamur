@@ -9,13 +9,9 @@
  * 1. Worker terus "mendengarkan" antrian 'irrigation' di Redis.
  * 2. Saat ada job masuk (baik dari jadwal cron maupun trigger manual),
  *    Worker langsung mengambil dan menjalankannya.
- * 3. Pertama, Worker kirim perintah relay ON ke ESP32 via MQTT → pompa menyala.
+ * 3. Pertama, Worker kirim perintah relay ON ke ESP32 via MQTT -> pompa menyala.
  * 4. Worker menunggu selama `durationSeconds` detik (waktu penyiraman).
- * 5. Setelah waktu habis, Worker kirim perintah relay OFF → pompa mati.
- *
- * Kenapa Worker dijalankan terpisah dari route?
- * - Supaya proses "menunggu" (misal menunggu 60 detik) tidak memblokir server.
- * - Worker jalan di background, sementara server tetap bisa menerima request lain.
+ * 5. Setelah waktu habis, Worker kirim perintah relay OFF -> pompa mati.
  *
  * Penting: Worker harus diinisialisasi SETELAH MQTT sudah terkoneksi,
  * karena worker butuh fungsi publishRelay dari mqttClient.
@@ -26,7 +22,6 @@
 const { Worker } = require('bullmq')
 const { connection } = require('./irrigationQueue')
 const { publishRelay } = require('../mqtt/mqttClient')
-const supabase = require('../supabase/client')
 
 /**
  * Definisi Worker untuk queue 'irrigation'.
@@ -38,10 +33,20 @@ const supabase = require('../supabase/client')
  */
 const worker = new Worker('irrigation', async (job) => {
     const { deviceId, durationSeconds } = job.data
-    console.log(`[Worker] Mulai siram: ${deviceId} selama ${durationSeconds}s`)
+    const nowUTC = new Date().toISOString()
+    const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19)
+
+    console.log(`[Worker] ============================================================`)
+    console.log(`[Worker] JOB DIMULAI — ID: ${job.id}`)
+    console.log(`[Worker] Device  : ${deviceId}`)
+    console.log(`[Worker] Durasi  : ${durationSeconds} detik`)
+    console.log(`[Worker] Waktu   : ${nowWIB} WIB (${nowUTC} UTC)`)
+    console.log(`[Worker] Sumber  : ${job.opts?.repeat?.cron ? 'Jadwal otomatis cron: ' + job.opts.repeat.cron : 'Siram manual'}`)
+    console.log(`[Worker] ============================================================`)
 
     // Langkah 1: Nyalakan pompa dengan kirim perintah ON ke relay ESP32
     publishRelay(deviceId, 'ON')
+    console.log(`[Worker] >> Relay ON dikirim ke ${deviceId}`)
 
     // Langkah 2: Tunggu selama durasi yang ditentukan
     // Ini tidak memblokir server karena berjalan di proses worker yang terpisah
@@ -49,19 +54,28 @@ const worker = new Worker('irrigation', async (job) => {
 
     // Langkah 3: Matikan pompa setelah durasi selesai
     publishRelay(deviceId, 'OFF')
-
-    // Catat ke console — sensor_logs hanya untuk data sensor (temperature/humidity)
-    // TODO: buat tabel 'irrigation_logs' terpisah jika butuh audit trail penyiraman
-    console.log(`[Worker] Selesai: ${deviceId} | durasi: ${durationSeconds}s`)
+    console.log(`[Worker] >> Relay OFF dikirim ke ${deviceId}`)
+    console.log(`[Worker] JOB SELESAI — ${deviceId} | durasi: ${durationSeconds}s`)
 
 }, { connection })
 
-/**
- * Event handler jika sebuah job gagal dieksekusi.
- * Ini penting untuk debugging — error akan muncul di console dengan jelas.
- */
+// ── Event Handlers ──────────────────────────────────────────────
+
+worker.on('completed', (job) => {
+    console.log(`[Worker] Job ${job.id} berhasil diselesaikan.`)
+})
+
 worker.on('failed', (job, err) => {
-    console.error(`[Worker] Job ${job.id} gagal:`, err.message)
+    console.error(`[Worker] Job ${job?.id} GAGAL:`, err.message)
+    console.error(`[Worker] Stack:`, err.stack)
+})
+
+worker.on('error', (err) => {
+    console.error(`[Worker] Worker error:`, err.message)
+})
+
+worker.on('ready', () => {
+    console.log(`[Worker] Worker siap memproses antrian 'irrigation'`)
 })
 
 module.exports = worker
