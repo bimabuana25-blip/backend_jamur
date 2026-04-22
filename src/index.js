@@ -67,10 +67,15 @@ app.use('/api', globalLimiter)
 // =============================================================================
 app.use('/api/threshold', require('./routes/threshold'))    // Atur batas suhu & kelembapan
 app.use('/api/history', require('./routes/history'))        // Lihat riwayat data sensor
+app.use('/api/schedule/:deviceId/now', manualIrrigationLimiter) // Extra ketat untuk siram manual (HARUS sebelum route schedule!)
 app.use('/api/schedule', require('./routes/schedule'))      // Kelola jadwal penyiraman
-app.use('/api/schedule/:deviceId/now', manualIrrigationLimiter) // Extra ketat untuk siram manual
 app.use('/api/device', require('./routes/device'))          // Klaim & kelola perangkat
 // =============================================================================
+
+// Endpoint health check untuk platform deployment seperti Fly.io / Railway
+app.get('/', (req, res) => {
+    res.status(200).send('OK');
+});
 
 // Railway secara otomatis menyediakan variabel PORT via environment variable.
 // Jangan hardcode port! Gunakan process.env.PORT agar server bisa berjalan di Railway.

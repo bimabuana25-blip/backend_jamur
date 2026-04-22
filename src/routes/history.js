@@ -41,6 +41,8 @@ router.get('/:deviceId', async (req, res) => {
         .from('sensor_logs')
         .select('temperature, humidity, relay_state, created_at')
         .eq('device_id', req.params.deviceId)
+        .not('temperature', 'is', null)   // Hanya ambil baris dengan data sensor valid
+        .not('humidity', 'is', null)
         .order('created_at', { ascending: false }) // Data terbaru di atas
         .limit(limit)
 

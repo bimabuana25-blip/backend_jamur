@@ -60,8 +60,9 @@ router.get('/:deviceId', async (req, res) => {
 router.post('/:deviceId', async (req, res) => {
     const { temp_max, hum_max } = req.body
 
-    // Validasi: kedua nilai threshold wajib dikirim
-    if (!temp_max || !hum_max) {
+    // Validasi: kedua nilai threshold wajib dikirim dan bukan null/undefined
+    // Catatan: JANGAN gunakan !temp_max / !hum_max karena nilai 0 dianggap falsy di JS!
+    if (temp_max === undefined || temp_max === null || hum_max === undefined || hum_max === null) {
         return res.status(400).json({ error: 'temp_max dan hum_max wajib diisi' })
     }
 

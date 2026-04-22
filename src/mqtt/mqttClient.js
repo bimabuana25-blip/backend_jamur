@@ -28,7 +28,7 @@ const supabase = require('../supabase/client')
 
 // Daftar topik MQTT yang digunakan dalam sistem ini
 const TOPIC_SENSOR = 'sensor/dht22'      // Topik untuk menerima data dari ESP32
-const TOPIC_THRESHOLD = 'config/threshold' // Topik untuk kirim setting threshold ke ESP32
+const TOPIC_THRESHOLD_BASE = 'config/threshold' // Topik dasar untuk kirim setting threshold ke ESP32
 const TOPIC_RELAY = 'cmd/relay'           // Topik dasar untuk kontrol relay
 
 // =============================================================================
@@ -60,10 +60,16 @@ async function getCachedThreshold(deviceId) {
         .from('thresholds')
         .select('temp_max, hum_max')
         .eq('device_id', deviceId)
-        .single()
+        .limit(1)
+        .maybeSingle()
 
     if (error) {
         console.error('[Cache] Gagal baca threshold:', error.message)
+        return null
+    }
+
+    if (!data) {
+        console.warn(`[Cache] Threshold belum disetel untuk ${deviceId}`)
         return null
     }
 
@@ -132,15 +138,8 @@ function connect() {
             console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
         }
 
-        // Langkah 2: Baca threshold dari cache (hemat query DB)
-        const cfg = await getCachedThreshold(device_id)
-
-        // Langkah 3: Otomatis nyalakan/matikan relay berdasarkan threshold
-        // Relay ON jika suhu ATAU kelembapan melewati batas yang ditentukan
-        if (cfg) {
-            const relayOn = temp > cfg.temp_max || hum > cfg.hum_max
-            publishRelay(device_id, relayOn ? 'ON' : 'OFF')
-        }
+        // Langkah 2: Baca threshold dari cache (hanya untuk memastikan cache tersimpan, logika auto diurus ESP32)
+        await getCachedThreshold(device_id)
     })
 
     // Event: Terjadi error pada koneksi MQTT
@@ -162,7 +161,7 @@ function connect() {
 function publishThreshold(deviceId, tempMax, humMax) {
     const payload = JSON.stringify({ temp: tempMax, hum: humMax })
     // retain: true → ESP32 yang baru connect akan langsung dapat nilai threshold terkini
-    client.publish(TOPIC_THRESHOLD, payload, { qos: 1, retain: true })
+    client.publish(`${TOPIC_THRESHOLD_BASE}/${deviceId}`, payload, { qos: 1, retain: true })
 
     // Perbarui cache langsung agar nilai baru efektif tanpa harus tunggu 30 detik
     thresholdCache.set(deviceId, { temp_max: tempMax, hum_max: humMax, cachedAt: Date.now() })
