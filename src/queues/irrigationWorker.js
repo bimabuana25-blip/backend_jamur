@@ -54,15 +54,15 @@ const worker = new Worker('irrigation', async (job) => {
     try {
         const { data: device } = await supabase
             .from('devices')
-            .select('user_id')
+            .select('claimed_by')
             .eq('device_id', deviceId)
             .single()
 
-        if (device && device.user_id) {
+        if (device && device.claimed_by) {
             const isAuto = job.opts?.repeat?.cron
             sendNotification(
-                device.user_id, 
-                'Penyiraman Dimulai 💦', 
+                device.claimed_by,
+                'Penyiraman Dimulai 💦',
                 `Pompa menyala selama ${durationSeconds} detik via ${isAuto ? 'Jadwal Otomatis' : 'Sistem'}.`
             )
         }

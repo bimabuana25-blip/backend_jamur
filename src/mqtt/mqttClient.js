@@ -28,7 +28,7 @@ const supabase = require('../supabase/client')
 const Redis = require('ioredis')
 const { sendNotification } = require('../utils/notification')
 
-const redis = new Redis(process.env.REDIS_URL)
+const redis = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null
 
 // Daftar topik MQTT yang digunakan dalam sistem ini
 const TOPIC_SENSOR = 'sensor/dht22'      // Topik untuk menerima data dari ESP32
@@ -84,6 +84,19 @@ async function getCachedThreshold(deviceId) {
 }
 // =============================================================================
 
+// =============================================================================
+// IN-MEMORY CACHE UNTUK SMART FILTER (DEADBAND) & STATUS
+// =============================================================================
+// Map ini mencatat status terakhir agar tidak spam ke Supabase
+const sensorLogCache = new Map() // { temp, hum, relay_state, lastSavedAt }
+const lastSeenCache = new Map()  // timestamp terakhir kali device laporan online
+
+const TEMP_DELTA = 0.5;         // Perubahan suhu minimal untuk disimpan
+const HUM_DELTA = 1.0;          // Perubahan kelembapan minimal untuk disimpan
+const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 menit (jaga grafik tidak putus)
+const LAST_SEEN_INTERVAL_MS = 1 * 60 * 1000; // 1 menit (throttle status online)
+// =============================================================================
+
 // Variabel untuk menyimpan instance koneksi MQTT (digunakan di seluruh file ini)
 let client
 
@@ -117,8 +130,9 @@ function connect() {
      * Alur: Terima data → Simpan ke DB → Cek threshold → Kontrol relay
      */
     client.on('message', async (topic, payload) => {
-        // Hanya proses pesan dari topik sensor, abaikan topik lain
-        if (topic !== TOPIC_SENSOR) return
+        try {
+            // Hanya proses pesan dari topik sensor, abaikan topik lain
+            if (topic !== TOPIC_SENSOR) return
 
         // Parsing payload dari format JSON ke objek JavaScript
         let data
@@ -133,16 +147,57 @@ function connect() {
         const { temp, hum, relay_state, device_id = 'esp32-01' } = data
         console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Relay: ${relay_state}`)
 
-        // Langkah 1: Simpan data sensor ke tabel sensor_logs di Supabase
-        // relay_state disimpan agar Flutter bisa sinkronisasi status tombol ON/OFF
-        const { error: insertErr } = await supabase.from('sensor_logs').insert({
-            device_id,
-            temperature: temp,
-            humidity: hum,
-            relay_state: relay_state ?? false,
-        })
-        if (insertErr) {
-            console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
+        const now = Date.now();
+
+        // Langkah 1A: Update status online (last_seen) dengan throttle 1 menit
+        const lastSeen = lastSeenCache.get(device_id) || 0;
+        if (now - lastSeen > LAST_SEEN_INTERVAL_MS) {
+            // Kita tidak perlu await di sini agar tidak memblokir proses peringatan (Push Notif)
+            supabase.from('devices')
+                .update({ is_online: true, last_seen: new Date().toISOString() })
+                .eq('device_id', device_id)
+                .then(({ error }) => {
+                    if (error) console.error('[MQTT] Gagal update last_seen:', error.message);
+                    else lastSeenCache.set(device_id, now);
+                });
+        }
+
+        // Langkah 1B: Smart Filter untuk menyimpan data ke tabel sensor_logs
+        let shouldSaveData = false;
+        const lastData = sensorLogCache.get(device_id);
+
+        if (!lastData) {
+            shouldSaveData = true; // Simpan jika belum ada riwayat di memori server
+        } else {
+            const tempDiff = Math.abs(temp - lastData.temp);
+            const humDiff = Math.abs(hum - lastData.hum);
+            const timeDiff = now - lastData.lastSavedAt;
+            const relayChanged = relay_state !== lastData.relay_state;
+
+            // Logika Smart Filter (Deadband)
+            if (tempDiff > TEMP_DELTA || humDiff > HUM_DELTA || relayChanged || timeDiff > HEARTBEAT_INTERVAL_MS) {
+                shouldSaveData = true;
+            }
+        }
+
+        if (shouldSaveData) {
+            const { error: insertErr } = await supabase.from('sensor_logs').insert({
+                device_id,
+                temperature: temp,
+                humidity: hum,
+                relay_state: relay_state ?? false,
+            })
+            if (insertErr) {
+                console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
+            } else {
+                // Catat ke memori setelah berhasil insert
+                sensorLogCache.set(device_id, {
+                    temp,
+                    hum,
+                    relay_state: relay_state ?? false,
+                    lastSavedAt: now
+                });
+            }
         }
 
         // Langkah 2: Baca threshold dari cache (hanya untuk memastikan cache tersimpan, logika auto diurus ESP32)
@@ -165,22 +220,25 @@ function connect() {
 
             if (alertMsg && notifKey) {
                 // Cek apakah sudah dinotifikasi dalam 30 menit terakhir
-                const isNotified = await redis.get(notifKey)
+                const isNotified = redis ? await redis.get(notifKey) : false
                 if (!isNotified) {
                     // Cari user yang memiliki alat ini
                     const { data: device } = await supabase
                         .from('devices')
-                        .select('user_id')
+                        .select('claimed_by')
                         .eq('device_id', device_id)
                         .single()
 
-                    if (device && device.user_id) {
-                        sendNotification(device.user_id, 'Peringatan Sensor Kumbung ⚠️', alertMsg)
+                    if (device && device.claimed_by) {
+                        sendNotification(device.claimed_by, 'Peringatan Sensor Kumbung ⚠️', alertMsg)
                         // Set cooldown 30 menit (1800 detik)
-                        await redis.set(notifKey, '1', 'EX', 1800)
+                        if (redis) await redis.set(notifKey, '1', 'EX', 1800)
                     }
                 }
             }
+        }
+        } catch (globalErr) {
+            console.error('[MQTT] Kesalahan tidak terduga saat memproses pesan:', globalErr.message)
         }
     })
 

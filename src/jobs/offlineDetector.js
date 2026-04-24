@@ -11,14 +11,14 @@ function startOfflineDetector() {
     setInterval(async () => {
         try {
             // console.log('[OfflineDetector] Mengecek perangkat offline...');
-            
+
             // Waktu 5 menit yang lalu (di Supabase pakai UTC)
             const fiveMinsAgo = new Date(Date.now() - CHECK_INTERVAL_MS).toISOString();
 
             // Cari perangkat yang is_online = true TAPI last_seen < 5 menit yang lalu
             const { data: devices, error } = await supabase
                 .from('devices')
-                .select('device_id, user_id, last_seen')
+                .select('device_id, claimed_by, last_seen')
                 .eq('is_online', true)
                 .lt('last_seen', fiveMinsAgo);
 
@@ -34,13 +34,13 @@ function startOfflineDetector() {
                     .eq('device_id', device.device_id);
 
                 // 2. Kirim Notifikasi OneSignal
-                if (device.user_id) {
+                if (device.claimed_by) {
                     const notifKey = `offline_notif_${device.device_id}`;
                     const isNotified = redis ? await redis.get(notifKey) : false;
-                    
+
                     if (!isNotified) {
                         sendNotification(
-                            device.user_id,
+                            device.claimed_by,
                             'Peringatan Kritis! 🚨',
                             `Perangkat IoT Kumbung (${device.device_id}) terputus dari jaringan atau mati listrik.`
                         );
@@ -52,7 +52,7 @@ function startOfflineDetector() {
             console.error('[OfflineDetector] Error:', error.message);
         }
     }, CHECK_INTERVAL_MS);
-    
+
     console.log('[OfflineDetector] Aktif. Pengecekan perangkat offline berjalan setiap 5 menit.');
 }
 

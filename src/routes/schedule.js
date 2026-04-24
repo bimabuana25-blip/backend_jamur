@@ -77,6 +77,11 @@ router.post('/:deviceId', async (req, res) => {
         return res.status(400).json({ error: 'cron dan duration_s wajib diisi' })
     }
 
+    // Validasi format cron (minimal harus ada 5 bagian yang dipisahkan spasi)
+    if (cron.split(' ').length !== 5) {
+        return res.status(400).json({ error: 'Format cron tidak valid' })
+    }
+
     // Langkah 1: Daftarkan job berulang ke BullMQ menggunakan pola cron
     // PENTING: BullMQ v5+ menggunakan key 'cron' bukan 'pattern' (breaking change)
     const jobId = `schedule-${deviceId}-${Date.now()}`
