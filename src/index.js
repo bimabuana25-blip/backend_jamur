@@ -44,6 +44,11 @@ startOfflineDetector()
 
 // LANGKAH 5: Inisialisasi aplikasi Express
 const app = express()
+
+// Percayai 1 layer proxy di depan aplikasi (misal Railway, Fly.io, Nginx)
+// Ini WAJIB diaktifkan agar express-rate-limit bisa membaca IP asli pengguna, bukan IP dari Proxy.
+app.set('trust proxy', 1)
+
 app.use(express.json()) // Supaya server bisa membaca body request dalam format JSON
 
 // =============================================================================
