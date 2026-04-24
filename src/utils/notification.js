@@ -22,7 +22,7 @@ const sendNotification = async (userId, title, message) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json; charset=utf-8",
-        "Authorization": `Key ${restApiKey}`
+        "Authorization": `Basic ${restApiKey}`
       },
       body: JSON.stringify(payload)
     });
