@@ -22,6 +22,8 @@
 const { Worker } = require('bullmq')
 const { connection } = require('./irrigationQueue')
 const { publishRelay } = require('../mqtt/mqttClient')
+const { sendNotification } = require('../utils/notification')
+const supabase = require('../supabase/client')
 
 /**
  * Definisi Worker untuk queue 'irrigation'.
@@ -47,6 +49,26 @@ const worker = new Worker('irrigation', async (job) => {
     // Langkah 1: Nyalakan pompa dengan kirim perintah ON ke relay ESP32
     publishRelay(deviceId, 'ON')
     console.log(`[Worker] >> Relay ON dikirim ke ${deviceId}`)
+
+    // Kirim Notifikasi OneSignal
+    try {
+        const { data: device } = await supabase
+            .from('devices')
+            .select('user_id')
+            .eq('device_id', deviceId)
+            .single()
+
+        if (device && device.user_id) {
+            const isAuto = job.opts?.repeat?.cron
+            sendNotification(
+                device.user_id, 
+                'Penyiraman Dimulai 💦', 
+                `Pompa menyala selama ${durationSeconds} detik via ${isAuto ? 'Jadwal Otomatis' : 'Sistem'}.`
+            )
+        }
+    } catch (e) {
+        console.error('[Worker] Gagal mengirim notifikasi penyiraman:', e.message)
+    }
 
     // Langkah 2: Tunggu selama durasi yang ditentukan
     // Ini tidak memblokir server karena berjalan di proses worker yang terpisah

@@ -25,6 +25,10 @@
 
 const mqtt = require('mqtt')
 const supabase = require('../supabase/client')
+const Redis = require('ioredis')
+const { sendNotification } = require('../utils/notification')
+
+const redis = new Redis(process.env.REDIS_URL)
 
 // Daftar topik MQTT yang digunakan dalam sistem ini
 const TOPIC_SENSOR = 'sensor/dht22'      // Topik untuk menerima data dari ESP32
@@ -142,7 +146,42 @@ function connect() {
         }
 
         // Langkah 2: Baca threshold dari cache (hanya untuk memastikan cache tersimpan, logika auto diurus ESP32)
-        await getCachedThreshold(device_id)
+        const threshold = await getCachedThreshold(device_id)
+
+        // Langkah 3: Pengecekan Suhu & Kelembapan untuk Push Notification (Anti-Spam 30 menit)
+        if (threshold) {
+            let alertMsg = null
+            let notifKey = null
+
+            if (temp > threshold.temp_max) {
+                alertMsg = `Peringatan Panas! Suhu saat ini ${temp}°C (Batas: ${threshold.temp_max}°C)`
+                notifKey = `notified_temp_${device_id}`
+            } else if (hum > threshold.hum_max) {
+                // Sesuai kebutuhan jika hum > hum_max atau hum < hum_min (karena ini jamur, kadang hum_min yang dicari)
+                // Tapi kita ikuti plan awal: Kelembapan melebihi batas.
+                alertMsg = `Peringatan Lembap! Kelembapan saat ini ${hum}% (Batas: ${threshold.hum_max}%)`
+                notifKey = `notified_hum_${device_id}`
+            }
+
+            if (alertMsg && notifKey) {
+                // Cek apakah sudah dinotifikasi dalam 30 menit terakhir
+                const isNotified = await redis.get(notifKey)
+                if (!isNotified) {
+                    // Cari user yang memiliki alat ini
+                    const { data: device } = await supabase
+                        .from('devices')
+                        .select('user_id')
+                        .eq('device_id', device_id)
+                        .single()
+
+                    if (device && device.user_id) {
+                        sendNotification(device.user_id, 'Peringatan Sensor Kumbung ⚠️', alertMsg)
+                        // Set cooldown 30 menit (1800 detik)
+                        await redis.set(notifKey, '1', 'EX', 1800)
+                    }
+                }
+            }
+        }
     })
 
     // Event: Terjadi error pada koneksi MQTT

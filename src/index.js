@@ -24,6 +24,7 @@ const express = require('express')
 const rateLimit = require('express-rate-limit')
 const { connect } = require('./mqtt/mqttClient')
 const { restoreSchedules } = require('./queues/scheduleRestore')
+const { startOfflineDetector } = require('./jobs/offlineDetector')
 
 // LANGKAH 1: Koneksi MQTT ke HiveMQ Cloud terlebih dahulu
 // Ini harus jalan duluan sebelum Worker aktif
@@ -38,7 +39,10 @@ require('./queues/irrigationWorker')
 // Semua job lama dibersihkan dulu, lalu jadwal aktif dari DB didaftarkan ulang.
 restoreSchedules()
 
-// LANGKAH 4: Inisialisasi aplikasi Express
+// LANGKAH 4: Mulai pendeteksi offline (Push Notification)
+startOfflineDetector()
+
+// LANGKAH 5: Inisialisasi aplikasi Express
 const app = express()
 app.use(express.json()) // Supaya server bisa membaca body request dalam format JSON
 
