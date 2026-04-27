@@ -87,6 +87,7 @@ app.use('/api/history', require('./routes/history'))        // Lihat riwayat dat
 app.use('/api/schedule/:deviceId/now', manualIrrigationLimiter) // Extra ketat untuk siram manual (HARUS sebelum route schedule!)
 app.use('/api/schedule', require('./routes/schedule'))      // Kelola jadwal penyiraman
 app.use('/api/device', require('./routes/device'))          // Klaim & kelola perangkat
+app.use('/api/mode', require('./routes/mode'))              // Kontrol mode operasi ESP32 (auto/manual/offline)
 // =============================================================================
 
 // Endpoint health check untuk platform deployment seperti Fly.io / Railway

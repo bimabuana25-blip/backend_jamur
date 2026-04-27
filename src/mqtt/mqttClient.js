@@ -31,9 +31,10 @@ const { sendNotification } = require('../utils/notification')
 const redis = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null
 
 // Daftar topik MQTT yang digunakan dalam sistem ini
-const TOPIC_SENSOR = 'sensor/dht22'      // Topik untuk menerima data dari ESP32
+const TOPIC_SENSOR = 'sensor/dht22'         // Topik untuk menerima data dari ESP32
 const TOPIC_THRESHOLD_BASE = 'config/threshold' // Topik dasar untuk kirim setting threshold ke ESP32
-const TOPIC_RELAY = 'cmd/relay'           // Topik dasar untuk kontrol relay
+const TOPIC_RELAY = 'cmd/relay'            // Topik dasar untuk kontrol relay
+const TOPIC_MODE  = 'cmd/mode'             // Topik dasar untuk mengirim perintah ganti mode ke ESP32
 
 // =============================================================================
 // IN-MEMORY CACHE — Penyimpanan Sementara di Memori Server
@@ -144,7 +145,8 @@ function connect() {
 
         // Destructure data sensor. Jika ESP32 tidak kirim device_id, pakai default 'esp32-01'
         // relay_state dikirim ESP32 sebagai boolean (true = ON, false = OFF)
-        const { temp, hum, relay_state, device_id = 'esp32-01' } = data
+        // mode dikirim ESP32 sebagai string (contoh: "auto", "auto-on", "cooldown", "schedule-on")
+        const { temp, hum, relay_state, mode, device_id = 'esp32-01' } = data
         console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Relay: ${relay_state}`)
 
         const now = Date.now();
@@ -186,6 +188,7 @@ function connect() {
                 temperature: temp,
                 humidity: hum,
                 relay_state: relay_state ?? false,
+                mode: mode ?? null,   // Simpan snapshot mode ESP32 saat data dikirim
             })
             if (insertErr) {
                 console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
@@ -281,4 +284,16 @@ function publishRelay(deviceId, state) {
     console.log(`[MQTT] Relay ${deviceId} → ${state}`)
 }
 
-module.exports = { connect, publishThreshold, publishRelay }
+/**
+ * Kirim perintah ganti mode operasi ke ESP32.
+ * ESP32 akan berpindah ke mode target dan menjalankan logika yang sesuai.
+ *
+ * @param {string} deviceId - ID perangkat target
+ * @param {'auto'|'manual'|'offline'} mode - Mode yang ingin diaktifkan
+ */
+function publishMode(deviceId, mode) {
+    client.publish(`${TOPIC_MODE}/${deviceId}`, mode, { qos: 1 })
+    console.log(`[MQTT] Mode ${deviceId} → ${mode}`)
+}
+
+module.exports = { connect, publishThreshold, publishRelay, publishMode }
