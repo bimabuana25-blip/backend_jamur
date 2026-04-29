@@ -79,4 +79,29 @@ router.get('/:deviceId/daily', async (req, res) => {
     res.json(data)
 })
 
+/**
+ * GET /api/history/:deviceId/hourly?days=7
+ * -----------------------------------------------------------------------------
+ * Mengambil rata-rata suhu dan kelembapan per jam.
+ * Digunakan untuk grafik harian yang menunjukkan data per jam di UI.
+ * Memanggil fungsi RPC 'get_hourly_average' di Supabase untuk performa yang lebih baik,
+ * terutama mengingat data sensor masuk sangat cepat (misal setiap 3 detik).
+ * 
+ * Params: deviceId — ID perangkat
+ * Query:  days (opsional, default 7 hari)
+ */
+router.get('/:deviceId/hourly', async (req, res) => {
+    const { deviceId } = req.params
+    const days = parseInt(req.query.days) || 7
+
+    // Panggil stored procedure di Supabase dengan parameter deviceId dan jumlah hari
+    const { data, error } = await supabase.rpc('get_hourly_average', {
+        p_device_id: deviceId,
+        p_days: days,
+    })
+
+    if (error) return res.status(500).json({ error: error.message })
+    res.json(data)
+})
+
 module.exports = router
