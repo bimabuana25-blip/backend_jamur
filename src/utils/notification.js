@@ -56,7 +56,12 @@ const sendNotification = async (userId, title, message, cooldownSec = 300) => {
     },
     target_channel: 'push',
     headings: { en: title },
-    contents: { en: message }
+    contents: { en: message },
+    // -- Konfigurasi Grouping & Stacking (Agar rapi seperti WhatsApp) --
+    android_group: 'jamur_monitoring_group', // Mengelompokkan notifikasi di Android
+    thread_id: 'jamur_monitoring_group',     // Mengelompokkan notifikasi di iOS
+    // Menimpa (replace) notifikasi lama yang jenisnya sama, agar tidak spam
+    collapse_id: title.replace(/\s+/g, '_').toLowerCase()
   };
 
   try {
