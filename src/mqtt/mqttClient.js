@@ -141,9 +141,10 @@ function connect() {
         }
 
         // Destructure data sensor. Jika ESP32 tidak kirim device_id, pakai default 'esp32-01'
-        // relay_state dikirim ESP32 sebagai boolean (true = ON, false = OFF)
+        // relay dikirim ESP32 sebagai boolean (true = ON, false = OFF) pada key 'relay' atau 'relay_state'
         // mode dikirim ESP32 sebagai string (contoh: "auto", "auto-on", "cooldown", "schedule-on")
-        const { temp, hum, relay_state, mode, device_id = 'esp32-01' } = data
+        const { temp, hum, mode, device_id = 'esp32-01' } = data
+        const relay_state = data.relay_state ?? data.relay ?? false;
         console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Relay: ${relay_state}`)
 
         const now = Date.now();
