@@ -39,7 +39,7 @@ router.get('/:deviceId', async (req, res) => {
 
     const { data, error } = await supabase
         .from('sensor_logs')
-        .select('temperature, humidity, relay_state, created_at')
+        .select('temperature, humidity, relay_state, mode, created_at')
         .eq('device_id', req.params.deviceId)
         .order('created_at', { ascending: false }) // Data terbaru di atas
         .limit(limit)
