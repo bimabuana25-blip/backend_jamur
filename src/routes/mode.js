@@ -107,31 +107,24 @@ router.post('/:deviceId', async (req, res) => {
         return res.status(404).json({ error: 'Device tidak ditemukan' })
     }
 
-    // Jika mode yang diminta sama dengan yang sedang aktif, tidak perlu kirim MQTT
-    if (device.current_mode === mode) {
-        return res.json({
-            message: `Device sudah berada di mode ${mode}`,
-            mode,
-            changed: false,
-        })
-    }
-
     // Kirim perintah ganti mode ke ESP32 via MQTT
-    // ESP32 akan merespons dengan memanggil fungsi switchMode() di firmware
+    // Selalu kirim, karena ESP32 mungkin sebelumnya sedang "cooldown" dan mengabaikan perintah
     publishMode(deviceId, mode)
 
-    // Simpan mode baru ke database
-    const { error: updateErr } = await supabase
-        .from('devices')
-        .update({ current_mode: mode })
-        .eq('device_id', deviceId)
+    // Simpan mode baru ke database hanya jika berbeda
+    if (device.current_mode !== mode) {
+        const { error: updateErr } = await supabase
+            .from('devices')
+            .update({ current_mode: mode })
+            .eq('device_id', deviceId)
 
-    if (updateErr) {
-        return res.status(500).json({ error: 'Gagal menyimpan mode ke database' })
+        if (updateErr) {
+            return res.status(500).json({ error: 'Gagal menyimpan mode ke database' })
+        }
     }
 
-    // Kirim notifikasi ke pemilik device (jika ada)
-    if (device.claimed_by) {
+    // Kirim notifikasi ke pemilik device hanya jika mode benar-benar berubah
+    if (device.claimed_by && device.current_mode !== mode) {
         try {
             sendNotification(
                 device.claimed_by,
@@ -144,12 +137,14 @@ router.post('/:deviceId', async (req, res) => {
         }
     }
 
-    console.log(`[Mode] ${deviceId} → ${device.current_mode} → ${mode}`)
+    console.log(`[Mode] ${deviceId} → ${device.current_mode} → ${mode} (Forced MQTT Publish)`)
 
     res.json({
-        message: `Mode berhasil diubah ke ${mode}`,
+        message: device.current_mode === mode
+            ? `Perintah mode ${mode} dikirim ulang ke perangkat`
+            : `Mode berhasil diubah ke ${mode}`,
         mode,
-        changed: true,
+        changed: device.current_mode !== mode,
     })
 })
 
