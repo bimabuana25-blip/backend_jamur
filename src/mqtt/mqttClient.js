@@ -165,6 +165,9 @@ function connect() {
         // Langkah 1B: Smart Filter untuk menyimpan data ke tabel sensor_logs
         let shouldSaveData = false;
         const lastData = sensorLogCache.get(device_id);
+        
+        // Pastikan mode tidak pernah null agar Flutter app tidak crash (terpental)
+        const safeMode = mode ?? (lastData?.mode ?? 'auto');
 
         if (!lastData) {
             shouldSaveData = true; // Simpan jika belum ada riwayat di memori server
@@ -173,8 +176,7 @@ function connect() {
             const humDiff = Math.abs(hum - lastData.hum);
             const timeDiff = now - lastData.lastSavedAt;
             const relayChanged = relay_state !== lastData.relay_state;
-            const currentMode = mode ?? null;
-            const modeChanged = currentMode !== lastData.mode;
+            const modeChanged = safeMode !== lastData.mode;
 
             // Logika Smart Filter (Deadband)
             if (tempDiff > TEMP_DELTA || humDiff > HUM_DELTA || relayChanged || modeChanged || timeDiff > HEARTBEAT_INTERVAL_MS) {
@@ -188,7 +190,7 @@ function connect() {
                 temperature: temp,
                 humidity: hum,
                 relay_state: relay_state ?? false,
-                mode: mode ?? null,   // Simpan snapshot mode ESP32 saat data dikirim
+                mode: safeMode,   // Simpan snapshot mode ESP32 saat data dikirim
             })
             if (insertErr) {
                 console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
@@ -198,7 +200,7 @@ function connect() {
                     temp,
                     hum,
                     relay_state: relay_state ?? false,
-                    mode: mode ?? null,
+                    mode: safeMode,
                     lastSavedAt: now
                 });
             }
