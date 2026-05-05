@@ -173,7 +173,8 @@ function connect() {
             const humDiff = Math.abs(hum - lastData.hum);
             const timeDiff = now - lastData.lastSavedAt;
             const relayChanged = relay_state !== lastData.relay_state;
-            const modeChanged = mode !== lastData.mode;
+            const currentMode = mode ?? null;
+            const modeChanged = currentMode !== lastData.mode;
 
             // Logika Smart Filter (Deadband)
             if (tempDiff > TEMP_DELTA || humDiff > HUM_DELTA || relayChanged || modeChanged || timeDiff > HEARTBEAT_INTERVAL_MS) {
