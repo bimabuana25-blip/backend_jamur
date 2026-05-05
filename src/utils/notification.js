@@ -24,16 +24,21 @@ const sendNotification = async (userId, title, message, cooldownSec = 300) => {
     return;
   }
 
+  // Ensure targetIds is a flat array of unique strings
+  const targetIds = Array.isArray(userId) ? [...new Set(userId.flat())] : [userId];
+  
+  if (targetIds.length === 0) return;
+
   // ── Anti-Spam Guard ──────────────────────────────────────────────────────
   // Buat kunci unik berdasarkan siapa penerima dan judul notifikasinya.
   // Ini mencegah notif "Penyiraman Dimulai" atau "Perangkat Offline"
   // dikirim berkali-kali dalam waktu singkat.
-  const cooldownKey = `notif_cd:${userId}:${title.replace(/\s+/g, '_').toLowerCase()}`;
+  const cooldownKey = `notif_cd:${targetIds.join(',')}:${title.replace(/\s+/g, '_').toLowerCase()}`;
 
   if (redis) {
     const isOnCooldown = await redis.get(cooldownKey);
     if (isOnCooldown) {
-      console.log(`[Notif] Cooldown aktif, skip: "${title}" → ${userId}`);
+      console.log(`[Notif] Cooldown aktif, skip: "${title}" → ${targetIds}`);
       return;
     }
     // Set cooldown key di Redis
@@ -42,7 +47,7 @@ const sendNotification = async (userId, title, message, cooldownSec = 300) => {
     // Fallback: gunakan in-memory Map jika Redis tidak ada
     const expiresAt = inMemoryCooldown.get(cooldownKey);
     if (expiresAt && Date.now() < expiresAt) {
-      console.log(`[Notif] Cooldown aktif (in-memory), skip: "${title}" → ${userId}`);
+      console.log(`[Notif] Cooldown aktif (in-memory), skip: "${title}" → ${targetIds}`);
       return;
     }
     inMemoryCooldown.set(cooldownKey, Date.now() + cooldownSec * 1000);
@@ -52,7 +57,7 @@ const sendNotification = async (userId, title, message, cooldownSec = 300) => {
   const payload = {
     app_id: appId,
     include_aliases: {
-      external_id: [userId]
+      external_id: targetIds
     },
     target_channel: 'push',
     headings: { en: title },
@@ -76,9 +81,14 @@ const sendNotification = async (userId, title, message, cooldownSec = 300) => {
 
     const result = await response.json();
     if (result.errors) {
-      console.error('[Notif] OneSignal error:', result.errors);
+      // Jika error karena user belum login (invalid_aliases), jangan tampilkan error panjang
+      if (result.errors.invalid_aliases) {
+        console.warn(`[Notif] User belum register OneSignal (invalid_aliases):`, targetIds);
+      } else {
+        console.error('[Notif] OneSignal error:', result.errors);
+      }
     } else {
-      console.log(`[Notif] Terkirim ke ${userId}: "${title}"`);
+      console.log(`[Notif] Terkirim ke ${targetIds}: "${title}"`);
     }
   } catch (error) {
     console.error('[Notif] Gagal kirim via OneSignal:', error.message);

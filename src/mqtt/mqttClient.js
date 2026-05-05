@@ -86,7 +86,7 @@ async function getCachedThreshold(deviceId) {
 // IN-MEMORY CACHE UNTUK SMART FILTER (DEADBAND) & STATUS
 // =============================================================================
 // Map ini mencatat status terakhir agar tidak spam ke Supabase
-const sensorLogCache = new Map() // { temp, hum, relay_state, lastSavedAt }
+const sensorLogCache = new Map() // { temp, hum, relay_state, mode, lastSavedAt }
 const lastSeenCache = new Map()  // timestamp terakhir kali device laporan online
 
 const TEMP_DELTA = 0.5;         // Perubahan suhu minimal untuk disimpan
@@ -173,9 +173,10 @@ function connect() {
             const humDiff = Math.abs(hum - lastData.hum);
             const timeDiff = now - lastData.lastSavedAt;
             const relayChanged = relay_state !== lastData.relay_state;
+            const modeChanged = mode !== lastData.mode;
 
             // Logika Smart Filter (Deadband)
-            if (tempDiff > TEMP_DELTA || humDiff > HUM_DELTA || relayChanged || timeDiff > HEARTBEAT_INTERVAL_MS) {
+            if (tempDiff > TEMP_DELTA || humDiff > HUM_DELTA || relayChanged || modeChanged || timeDiff > HEARTBEAT_INTERVAL_MS) {
                 shouldSaveData = true;
             }
         }
@@ -196,6 +197,7 @@ function connect() {
                     temp,
                     hum,
                     relay_state: relay_state ?? false,
+                    mode: mode ?? null,
                     lastSavedAt: now
                 });
             }
