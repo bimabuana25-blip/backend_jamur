@@ -22,32 +22,19 @@
 require('dotenv').config() // Load semua variabel dari file .env ke process.env
 const express = require('express')
 const rateLimit = require('express-rate-limit')
-const { connect } = require('./mqtt/mqttClient')
-const { restoreSchedules } = require('./queues/scheduleRestore')
-const { startOfflineDetector } = require('./jobs/offlineDetector')
+const { initFailover } = require('./utils/failoverManager')
 
-// LANGKAH 1: Koneksi MQTT ke HiveMQ Cloud terlebih dahulu
-// Ini harus jalan duluan sebelum Worker aktif
-connect()
-
-// LANGKAH 2: Nyalakan Worker yang memproses antrian penyiraman
-// Worker sudah aman dijalankan karena MQTT sudah connect di langkah sebelumnya
-require('./queues/irrigationWorker')
-
-// LANGKAH 3: Pulihkan semua jadwal aktif dari Supabase ke BullMQ
-// Ini mengatasi masalah jadwal hilang setelah Railway redeploy atau Redis restart.
-// Semua job lama dibersihkan dulu, lalu jadwal aktif dari DB didaftarkan ulang.
-restoreSchedules()
-
-// LANGKAH 4: Mulai pendeteksi offline (Push Notification)
-startOfflineDetector()
+// Inisialisasi failover dinamis (menggantikan startup statis Langkah 1-4)
+initFailover()
 
 // LANGKAH 5: Inisialisasi aplikasi Express
 const app = express()
 
-// Percayai 1 layer proxy di depan aplikasi (misal Railway, Fly.io, Nginx)
-// Ini WAJIB diaktifkan agar express-rate-limit bisa membaca IP asli pengguna, bukan IP dari Proxy.
-app.set('trust proxy', 1)
+// Percayai layer proxy di depan aplikasi secara dinamis.
+// Jika di VPS (Backup) dibatasi 1 layer proxy (Nginx).
+// Jika di Railway (Primary) dibatasi 2 layer proxy (Nginx di VPS -> Edge Proxy Railway -> Node.js).
+const trustProxyLayers = process.env.IS_BACKUP_SERVER === 'true' ? 1 : 2
+app.set('trust proxy', trustProxyLayers)
 
 app.use(express.json()) // Supaya server bisa membaca body request dalam format JSON
 

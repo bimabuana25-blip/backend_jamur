@@ -31,7 +31,7 @@ const { sendNotification } = require('../utils/notification')
 const TOPIC_SENSOR = 'sensor/dht22'         // Topik untuk menerima data dari ESP32
 const TOPIC_THRESHOLD_BASE = 'config/threshold' // Topik dasar untuk kirim setting threshold ke ESP32
 const TOPIC_RELAY = 'cmd/relay'            // Topik dasar untuk kontrol relay
-const TOPIC_MODE  = 'cmd/mode'             // Topik dasar untuk mengirim perintah ganti mode ke ESP32
+const TOPIC_MODE = 'cmd/mode'             // Topik dasar untuk mengirim perintah ganti mode ke ESP32
 
 // =============================================================================
 // IN-MEMORY CACHE — Penyimpanan Sementara di Memori Server
@@ -104,6 +104,10 @@ let client
  * sebelum Worker dijalankan, agar MQTT siap saat Worker butuh publishRelay.
  */
 function connect() {
+    if (client) {
+        console.warn('[MQTT] Client sudah terhubung. Mengabaikan pemanggilan connect() baru.')
+        return
+    }
     // Buat koneksi ke HiveMQ menggunakan kredensial dari .env
     client = mqtt.connect(process.env.MQTT_BROKER_URL, {
         port: parseInt(process.env.MQTT_PORT) || 8883,
@@ -132,108 +136,117 @@ function connect() {
             // Hanya proses pesan dari topik sensor, abaikan topik lain
             if (topic !== TOPIC_SENSOR) return
 
-        // Parsing payload dari format JSON ke objek JavaScript
-        let data
-        try {
-            data = JSON.parse(payload.toString())
-        } catch {
-            return console.error('[MQTT] Payload tidak valid JSON')
-        }
-
-        // Destructure data sensor. Jika ESP32 tidak kirim device_id, pakai default 'esp32-01'
-        // relay dikirim ESP32 sebagai boolean (true = ON, false = OFF) pada key 'relay' atau 'relay_state'
-        // mode dikirim ESP32 sebagai string (contoh: "auto", "auto-on", "cooldown", "schedule-on")
-        const { temp, hum, mode, device_id = 'esp32-01' } = data
-        const relay_state = data.relay_state ?? data.relay ?? false;
-        console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Relay: ${relay_state}`)
-
-        const now = Date.now();
-
-        // Langkah 1A: Update status online (last_seen) dengan throttle 1 menit
-        const lastSeen = lastSeenCache.get(device_id) || 0;
-        if (now - lastSeen > LAST_SEEN_INTERVAL_MS) {
-            // Kita tidak perlu await di sini agar tidak memblokir proses peringatan (Push Notif)
-            supabase.from('devices')
-                .update({ is_online: true, last_seen: new Date().toISOString() })
-                .eq('device_id', device_id)
-                .then(({ error }) => {
-                    if (error) console.error('[MQTT] Gagal update last_seen:', error.message);
-                    else lastSeenCache.set(device_id, now);
-                });
-        }
-
-        // Langkah 1B: Smart Filter untuk menyimpan data ke tabel sensor_logs
-        let shouldSaveData = false;
-        const lastData = sensorLogCache.get(device_id);
-        
-        // Pastikan mode tidak pernah null agar Flutter app tidak crash (terpental)
-        const safeMode = mode ?? (lastData?.mode ?? 'auto');
-
-        if (!lastData) {
-            shouldSaveData = true; // Simpan jika belum ada riwayat di memori server
-        } else {
-            const tempDiff = Math.abs(temp - lastData.temp);
-            const humDiff = Math.abs(hum - lastData.hum);
-            const timeDiff = now - lastData.lastSavedAt;
-            const relayChanged = relay_state !== lastData.relay_state;
-            const modeChanged = safeMode !== lastData.mode;
-
-            // Logika Smart Filter (Deadband)
-            if (tempDiff > TEMP_DELTA || humDiff > HUM_DELTA || relayChanged || modeChanged || timeDiff > HEARTBEAT_INTERVAL_MS) {
-                shouldSaveData = true;
-            }
-        }
-
-        if (shouldSaveData) {
-            const { error: insertErr } = await supabase.from('sensor_logs').insert({
-                device_id,
-                temperature: temp,
-                humidity: hum,
-                relay_state: relay_state ?? false,
-                mode: safeMode,   // Simpan snapshot mode ESP32 saat data dikirim
-            })
-            if (insertErr) {
-                console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
-            } else {
-                // Catat ke memori setelah berhasil insert
-                sensorLogCache.set(device_id, {
-                    temp,
-                    hum,
-                    relay_state: relay_state ?? false,
-                    mode: safeMode,
-                    lastSavedAt: now
-                });
-            }
-        }
-
-        // Langkah 2: Baca threshold dari cache (hanya untuk memastikan cache tersimpan, logika auto diurus ESP32)
-        const threshold = await getCachedThreshold(device_id)
-
-        // Langkah 3: Pengecekan Suhu & Kelembapan untuk Push Notification
-        // Anti-spam (cooldown 30 menit) kini diurus otomatis oleh sendNotification.
-        if (threshold) {
-            let alertMsg = null
-
-            if (temp > threshold.temp_max) {
-                alertMsg = `Peringatan Panas! Suhu saat ini ${temp}°C (Batas: ${threshold.temp_max}°C)`
-            } else if (hum > threshold.hum_max) {
-                alertMsg = `Peringatan Lembap! Kelembapan saat ini ${hum}% (Batas: ${threshold.hum_max}%)`
+            // Parsing payload dari format JSON ke objek JavaScript
+            let data
+            try {
+                data = JSON.parse(payload.toString())
+            } catch {
+                return console.error('[MQTT] Payload tidak valid JSON')
             }
 
-            if (alertMsg) {
-                // Cari user yang memiliki alat ini
-                const { data: device } = await supabase
-                    .from('devices')
-                    .select('claimed_by')
+            // Destructure data sensor. Jika ESP32 tidak kirim device_id, pakai default 'esp32-01'
+            // relay dikirim ESP32 sebagai boolean (true = ON, false = OFF) pada key 'relay' atau 'relay_state'
+            // mode dikirim ESP32 sebagai string (contoh: "auto", "auto-on", "cooldown", "schedule-on")
+            const { temp, hum, mode, device_id = 'esp32-01' } = data
+            const relay_state = data.relay_state ?? data.relay ?? false;
+            console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Relay: ${relay_state}`)
+
+            const now = Date.now();
+
+            // Langkah 1A: Update status online (last_seen) dengan throttle 1 menit
+            const lastSeen = lastSeenCache.get(device_id) || 0;
+            if (now - lastSeen > LAST_SEEN_INTERVAL_MS) {
+                // Kita tidak perlu await di sini agar tidak memblokir proses peringatan (Push Notif)
+                supabase.from('devices')
+                    .update({ is_online: true, last_seen: new Date().toISOString() })
                     .eq('device_id', device_id)
-                    .single()
+                    .then(({ error }) => {
+                        if (error) console.error('[MQTT] Gagal update last_seen:', error.message);
+                        else lastSeenCache.set(device_id, now);
+                    });
+            }
 
-                if (device && device.claimed_by) {
-                    // Cooldown 30 menit (1800 detik) di-handle oleh sendNotification
-                    sendNotification(device.claimed_by, 'Peringatan Sensor Kumbung ⚠️', alertMsg, 1800)
+            // Langkah 1B: Smart Filter untuk menyimpan data ke tabel sensor_logs
+            let shouldSaveData = false;
+            const lastData = sensorLogCache.get(device_id);
+
+            // Pastikan mode tidak pernah null agar Flutter app tidak crash (terpental)
+            const safeMode = mode ?? (lastData?.mode ?? 'auto');
+
+            if (!lastData) {
+                shouldSaveData = true; // Simpan jika belum ada riwayat di memori server
+            } else {
+                const tempDiff = Math.abs(temp - lastData.temp);
+                const humDiff = Math.abs(hum - lastData.hum);
+                const timeDiff = now - lastData.lastSavedAt;
+                const relayChanged = relay_state !== lastData.relay_state;
+                const modeChanged = safeMode !== lastData.mode;
+
+                // Logika Smart Filter (Deadband)
+                if (tempDiff > TEMP_DELTA || humDiff > HUM_DELTA || relayChanged || modeChanged || timeDiff > HEARTBEAT_INTERVAL_MS) {
+                    shouldSaveData = true;
                 }
             }
-        }
+
+            if (shouldSaveData) {
+                const { error: insertErr } = await supabase.from('sensor_logs').insert({
+                    device_id,
+                    temperature: temp,
+                    humidity: hum,
+                    relay_state: relay_state ?? false,
+                    mode: safeMode,   // Simpan snapshot mode ESP32 saat data dikirim
+                })
+                if (insertErr) {
+                    console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
+                } else {
+                    // Catat ke memori setelah berhasil insert
+                    sensorLogCache.set(device_id, {
+                        temp,
+                        hum,
+                        relay_state: relay_state ?? false,
+                        mode: safeMode,
+                        lastSavedAt: now
+                    });
+                }
+            }
+
+            // Langkah 2: Baca threshold dari cache (hanya untuk memastikan cache tersimpan, logika auto diurus ESP32)
+            const threshold = await getCachedThreshold(device_id)
+
+            // Langkah 3: Pengecekan Suhu & Kelembapan untuk Push Notification
+            // Anti-spam (cooldown 30 menit) kini diurus otomatis oleh sendNotification.
+            if (threshold) {
+                const alerts = []
+                if (hum > threshold.hum_max) {
+                    alerts.push(`Kelembapan saat ini ${hum}% (Batas: ${threshold.hum_max}%)`)
+                }
+                if (temp > threshold.temp_max) {
+                    alerts.push(`Suhu saat ini ${temp}°C (Batas: ${threshold.temp_max}°C)`)
+                }
+
+                if (alerts.length > 0) {
+                    let alertMsg = ''
+                    if (alerts.length === 2) {
+                        alertMsg = `Peringatan Kumbung! ${alerts.join(' dan ')}`
+                    } else if (hum > threshold.hum_max) {
+                        alertMsg = `Peringatan Lembap! ${alerts[0]}`
+                    } else {
+                        alertMsg = `Peringatan Panas! ${alerts[0]}`
+                    }
+
+                    // Cari user yang memiliki alat ini
+                    const { data: device } = await supabase
+                        .from('devices')
+                        .select('claimed_by')
+                        .eq('device_id', device_id)
+                        .single()
+
+                    if (device && device.claimed_by) {
+                        // Cooldown 30 menit (1800 detik) di-handle oleh sendNotification
+                        sendNotification(device.claimed_by, 'Peringatan Sensor Kumbung ⚠️', alertMsg, 1800)
+                    }
+                }
+            }
         } catch (globalErr) {
             console.error('[MQTT] Kesalahan tidak terduga saat memproses pesan:', globalErr.message)
         }
@@ -244,6 +257,18 @@ function connect() {
 
     // Event: Koneksi terputus — otomatis akan mencoba reconnect sesuai reconnectPeriod
     client.on('offline', () => console.warn('[MQTT] Koneksi terputus, mencoba reconnect...'))
+}
+
+/**
+ * Memutuskan koneksi MQTT secara aman (digunakan saat failover kembali ke standby).
+ */
+function disconnect() {
+    if (client) {
+        client.end(true, () => {
+            console.log('[MQTT] Terputus secara aman (dinonaktifkan oleh failover)')
+        })
+        client = null
+    }
 }
 
 /**
@@ -258,7 +283,11 @@ function connect() {
 function publishThreshold(deviceId, tempMax, humMax) {
     const payload = JSON.stringify({ temp: tempMax, hum: humMax })
     // retain: true → ESP32 yang baru connect akan langsung dapat nilai threshold terkini
-    client.publish(`${TOPIC_THRESHOLD_BASE}/${deviceId}`, payload, { qos: 1, retain: true })
+    if (client) {
+        client.publish(`${TOPIC_THRESHOLD_BASE}/${deviceId}`, payload, { qos: 1, retain: true })
+    } else {
+        console.warn(`[MQTT] Terputus. Gagal publish threshold untuk ${deviceId} (Server Standby)`)
+    }
 
     // Perbarui cache langsung agar nilai baru efektif tanpa harus tunggu 30 detik
     thresholdCache.set(deviceId, { temp_max: tempMax, hum_max: humMax, cachedAt: Date.now() })
@@ -274,8 +303,12 @@ function publishThreshold(deviceId, tempMax, humMax) {
  * @param {'ON'|'OFF'} state - Perintah yang dikirim
  */
 function publishRelay(deviceId, state) {
-    client.publish(`${TOPIC_RELAY}/${deviceId}`, state, { qos: 1 })
-    console.log(`[MQTT] Relay ${deviceId} → ${state}`)
+    if (client) {
+        client.publish(`${TOPIC_RELAY}/${deviceId}`, state, { qos: 1 })
+        console.log(`[MQTT] Relay ${deviceId} → ${state}`)
+    } else {
+        console.warn(`[MQTT] Terputus. Gagal kirim perintah relay ${state} ke ${deviceId} (Server Standby)`)
+    }
 }
 
 /**
@@ -286,8 +319,12 @@ function publishRelay(deviceId, state) {
  * @param {'auto'|'manual'|'offline'} mode - Mode yang ingin diaktifkan
  */
 function publishMode(deviceId, mode) {
-    client.publish(`${TOPIC_MODE}/${deviceId}`, mode, { qos: 1 })
-    console.log(`[MQTT] Mode ${deviceId} → ${mode}`)
+    if (client) {
+        client.publish(`${TOPIC_MODE}/${deviceId}`, mode, { qos: 1 })
+        console.log(`[MQTT] Mode ${deviceId} → ${mode}`)
+    } else {
+        console.warn(`[MQTT] Terputus. Gagal kirim perintah mode ${mode} ke ${deviceId} (Server Standby)`)
+    }
 }
 
-module.exports = { connect, publishThreshold, publishRelay, publishMode }
+module.exports = { connect, disconnect, publishThreshold, publishRelay, publishMode }

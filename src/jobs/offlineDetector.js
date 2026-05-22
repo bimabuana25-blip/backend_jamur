@@ -4,8 +4,11 @@ const { sendNotification } = require('../utils/notification');
 // Jalankan pengecekan setiap 5 menit
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
+let intervalId = null;
+
 function startOfflineDetector() {
-    setInterval(async () => {
+    if (intervalId) return; // Menghindari multiple intervals
+    intervalId = setInterval(async () => {
         try {
             // console.log('[OfflineDetector] Mengecek perangkat offline...');
 
@@ -49,4 +52,12 @@ function startOfflineDetector() {
     console.log('[OfflineDetector] Aktif. Pengecekan perangkat offline berjalan setiap 5 menit.');
 }
 
-module.exports = { startOfflineDetector };
+function stopOfflineDetector() {
+    if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+        console.log('[OfflineDetector] Dinonaktifkan.');
+    }
+}
+
+module.exports = { startOfflineDetector, stopOfflineDetector };
