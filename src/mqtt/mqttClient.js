@@ -217,19 +217,19 @@ function connect() {
             // Anti-spam (cooldown 30 menit) kini diurus otomatis oleh sendNotification.
             if (threshold) {
                 const alerts = []
-                if (hum > threshold.hum_max) {
-                    alerts.push(`Kelembapan saat ini ${hum}% (Batas: ${threshold.hum_max}%)`)
+                if (hum < threshold.hum_max) {
+                    alerts.push(`Kelembapan saat ini ${hum}% (Batas minimal: ${threshold.hum_max}%)`)
                 }
                 if (temp > threshold.temp_max) {
-                    alerts.push(`Suhu saat ini ${temp}°C (Batas: ${threshold.temp_max}°C)`)
+                    alerts.push(`Suhu saat ini ${temp}°C (Batas maksimal: ${threshold.temp_max}°C)`)
                 }
 
                 if (alerts.length > 0) {
                     let alertMsg = ''
                     if (alerts.length === 2) {
                         alertMsg = `Peringatan Kumbung! ${alerts.join(' dan ')}`
-                    } else if (hum > threshold.hum_max) {
-                        alertMsg = `Peringatan Lembap! ${alerts[0]}`
+                    } else if (hum < threshold.hum_max) {
+                        alertMsg = `Peringatan Kering! ${alerts[0]}`
                     } else {
                         alertMsg = `Peringatan Panas! ${alerts[0]}`
                     }
