@@ -117,7 +117,7 @@ Buat file `.env` di root folder aplikasi, lalu isi konfigurasi berikut:
 # 💻 Server Configuration
 PORT=3000
 IS_BACKUP_SERVER=false                  # Set 'true' jika ini dideploy ke server VPS Backup
-PRIMARY_SERVER_URL=https://jamur-backend.up.railway.app # URL Primary Server (diperlukan jika ini Backup Server)
+PRIMARY_SERVER_URL=https://nama-project-kamu.up.railway.app # URL Primary Server (diperlukan jika ini Backup Server)
 FAILOVER_PING_INTERVAL_MS=10000         # Interval cek primary server (dalam milidetik, default 10 detik)
 
 # ⚡ Supabase Configuration (Ambil dari: Project Settings > API)
@@ -252,7 +252,7 @@ Server akan aktif pada port `http://localhost:3000` (atau sesuai konfigurasi env
 1. Hubungkan repository GitHub Anda ke [Railway.app](https://railway.app).
 2. Buat Project Baru dan pilih **Deploy dari GitHub**.
 3. Di tab **Variables**, masukkan semua Environment Variables seperti isi file `.env` di atas (kecuali `PORT` karena dikelola otomatis oleh Railway).
-4. Klik **Generate Domain** di tab **Settings > Networking** untuk mendapatkan URL server publik (contoh: `https://jamur-backend.up.railway.app`).
+4. Klik **Generate Domain** di tab **Settings > Networking** untuk mendapatkan URL server publik (contoh: `https://nama-project-kamu.up.railway.app`).
 
 ### B. Deploy ke VPS (Sebagai Backup Server)
 1. Siapkan server VPS (Ubuntu/Debian) dengan Node.js >= 18 dan PM2 terinstall.
@@ -270,11 +270,35 @@ Server akan aktif pada port `http://localhost:3000` (atau sesuai konfigurasi env
 ## 🔌 API Reference
 
 Base URL (Development): `http://localhost:3000/api`  
-Base URL (Production): `https://jamur-backend.up.railway.app/api`
+Base URL (Production): `https://nama-project-kamu.up.railway.app/api`
 
 > 🛡️ **Rate Limiting**:
 > * Global rate limit untuk semua API: **100 request/menit per IP**.
 > * Rate limit ketat untuk trigger siram manual: **5 request/menit per IP** (menghindari banjir air pada kumbung).
+
+---
+
+### 📋 Ringkasan Daftar API (API Cheat Sheet)
+
+Untuk mempermudah pencarian, berikut adalah ringkasan seluruh endpoint API yang tersedia pada backend ini:
+
+| Kategori | Fitur / Kegunaan | Method | Endpoint | Deskripsi Singkat |
+|---|---|:---:|---|---|
+| **📱 Device** | Klaim Device Baru (Pairing) | `POST` | `/api/device/claim` | Menghubungkan perangkat fisik ke akun user via kode klaim. |
+| | Ambil Info Device User | `GET` | `/api/device/my-device/:userId` | Mengambil detail perangkat milik user (status online, last seen). |
+| **🌡️ Threshold** | Ambil Threshold Aktif | `GET` | `/api/threshold/:deviceId` | Membaca batas suhu & kelembapan otomatisasi aktif. |
+| | Update Threshold | `POST` | `/api/threshold/:deviceId` | Mengubah batas threshold (langsung sinkron ke ESP32 via MQTT). |
+| **🗓️ Jadwal** | Ambil Semua Jadwal | `GET` | `/api/schedule/:deviceId` | Membaca seluruh daftar jadwal penyiraman perangkat. |
+| | Buat Jadwal Baru | `POST` | `/api/schedule/:deviceId` | Mendaftarkan jadwal berulang baru ke DB & BullMQ (cron). |
+| | Hapus Jadwal | `DELETE` | `/api/schedule/:id` | Menghapus jadwal permanen dari database dan antrian BullMQ. |
+| | Toggle Status Jadwal | `PATCH` | `/api/schedule/:id/toggle` | Mengaktifkan/menonaktifkan jadwal sementara tanpa menghapus. |
+| | Trigger Siram Instan | `POST` | `/api/schedule/:deviceId/now` | Memicu penyiraman manual sekali jalan (default durasi 30 detik). |
+| | Hentikan Pompa Paksa | `POST` | `/api/schedule/:deviceId/stop` | Mengirim sinyal `OFF` langsung ke relay pompa via MQTT. |
+| **⚙️ Mode** | Ambil Mode Kerja Aktif | `GET` | `/api/mode/:deviceId` | Membaca mode kerja aktif perangkat (`auto`, `manual`, `offline`). |
+| | Ubah Mode Kerja | `POST` | `/api/mode/:deviceId` | Mengubah mode kerja ESP32 dan sinkronisasi perintah via MQTT. |
+| **📊 Riwayat** | Ambil Log Sensor Terbaru | `GET` | `/api/history/:deviceId` | Mengambil data sensor real-time terbaru (terlimit maks 500). |
+| | Rata-rata Harian | `GET` | `/api/history/:deviceId/daily` | Mengambil data rata-rata suhu & kelembapan harian (tren grafik). |
+| | Rata-rata Per Jam | `GET` | `/api/history/:deviceId/hourly` | Mengambil data rata-rata suhu & kelembapan per jam (grafik analitis). |
 
 ---
 
