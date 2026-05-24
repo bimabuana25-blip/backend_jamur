@@ -1,46 +1,101 @@
 # 🍄 Backend IoT Kumbung Jamur
 
-Backend Node.js untuk sistem monitoring dan kontrol otomatis kumbung jamur berbasis IoT. Sistem ini menghubungkan sensor SHT31 dan relay pada ESP32 ke aplikasi mobile Flutter melalui MQTT, dengan penjadwalan penyiraman otomatis menggunakan BullMQ dan Supabase sebagai database utama.
+Backend Node.js untuk sistem monitoring dan kontrol otomatis kumbung jamur berbasis IoT. Sistem ini menghubungkan sensor **SHT31 / DHT22** dan relay pada **ESP32** ke aplikasi mobile **Flutter** melalui **MQTT (HiveMQ Cloud)**, dengan penjadwalan penyiraman otomatis menggunakan **BullMQ (Redis)**, sistem push notification anti-spam via **OneSignal**, serta database utama **Supabase**.
+
+Aplikasi ini dirancang dengan arsitektur **High Availability (Dual Server Failover)** dan **In-Memory Optimizations** untuk memastikan keandalan sistem yang optimal dan efisiensi resource yang sangat tinggi.
 
 ---
 
-## 🏗️ Arsitektur Sistem
+## 🏗️ Arsitektur Sistem Terdistribusi
+
+Sistem ini mendukung arsitektur **Failover Otomatis** menggunakan dua server (Primary & Backup) untuk menjamin layanan tetap berjalan meskipun server utama mengalami kendala (*down*).
 
 ```
-Flutter App
-    │
-    ▼ REST API (HTTP)
-┌──────────────────┐
-│  Express Server  │
-│   (index.js)     │
-└────────┬─────────┘
-         │
-   ┌─────┼─────────┐
-   ▼     ▼         ▼
-Supabase  BullMQ  MQTT Client
-(DB)    (Queue)  (HiveMQ Cloud)
-                     │
-                     ▼ MQTT (mqtts://)
-                  ESP32 + DHT22
+                 ┌──────────────────────────────────────┐
+                 │             Aplikasi Flutter         │
+                 └──────┬────────────────────────┬──────┘
+                        │                        │
+       HTTP REST API    │                        │ HTTP REST API
+   (https://...railway.app)                      │ (https://vps-backup-ip)
+                        ▼                        ▼
+           ┌────────────────────────┐  Ping  ┌────────────────────────┐
+           │     PRIMARY SERVER     ├───────>│     BACKUP SERVER      │
+           │       (Railway)        │ (10s)  │      (VPS Standby)     │
+           └───────────┬────────────┘        └───────────┬────────────┘
+                       │                                 │
+                 ┌─────┴─────────────────────────────────┴─────┐
+                 │                                             │
+                 ▼                     ▼                       ▼
+            Supabase (DB)       Upstash (Redis)           HiveMQ Cloud
+         ┌────────────────┐   ┌─────────────────┐     ┌──────────────────┐
+         │  Tabel Utama &  │   │  Antrian Kerja  │     │   Broker MQTT    │
+         │  RPC Functions │   │    (BullMQ)     │     │      (TLS)       │
+         └────────────────┘   └─────────────────┘     └────────┬─────────┘
+                                                               │
+                                                               ▼ (mqtts://)
+                                                       ┌─────────────────┐
+                                                       │ ESP32 + SHT31   │
+                                                       └─────────────────┘
 ```
 
-**Alur Data:**
-1. ESP32 membaca sensor DHT22 dan mengirim data ke MQTT topic `sensor/dht22`
-2. Backend menerima data sensor, menyimpan ke Supabase, lalu otomatis menyalakan/mematikan relay berdasarkan threshold
-3. Aplikasi Flutter mengontrol threshold, jadwal penyiraman, dan memantau data sensor melalui REST API
+### 🔄 Alur & Fitur Utama Failover (Dynamic Failover Manager)
+1. **Primary Server (Railway)**: Berjalan secara aktif. Menangani REST API, koneksi MQTT, pemrosesan antrian BullMQ, dan pendeteksian perangkat offline.
+2. **Backup Server (VPS - Standby)**:
+   - Saat startup, background services (MQTT, Worker BullMQ, Scheduler Restore, Offline Detector) **dinonaktifkan** (standby).
+   - Secara berkala (setiap 10 detik / `FAILOVER_PING_INTERVAL_MS`), server backup mengirimkan ping (HTTP GET) ke `PRIMARY_SERVER_URL`.
+   - **Jika Primary Down (Ping Gagal)**: Backup server langsung mengaktifkan semua background services lokal, me-resume worker BullMQ, me-restore jadwal aktif dari database, dan mengambil alih kendali sistem.
+   - **Jika Primary Kembali Online (Ping Sukses)**: Backup server secara otomatis mendegradasi diri kembali ke mode standby (disconnect MQTT, pause worker, matikan offline detector) untuk menghindari bentrokan eksekusi (*race conditions*).
 
 ---
 
-## 📋 Prasyarat
+## ⚡ Optimalisasi Kinerja & Efisiensi Database
 
-Pastikan sudah memiliki akun dan konfigurasi berikut:
+Untuk mencegah pembengkakan biaya database (kuota request Supabase) dan beban broker MQTT akibat frekuensi transmisi data ESP32 yang tinggi, backend mengimplementasikan beberapa teknik optimalisasi tingkat tinggi:
+
+### 1. In-Memory Cache (Threshold Cache)
+* **Masalah**: ESP32 mengirim data sensor secara real-time. Jika backend harus menanyakan batas threshold ke Supabase setiap kali data masuk, database akan terbebani ribuan query per menit.
+* **Solusi**: Nilai threshold disimpan dalam *in-memory cache* server dengan TTL 30 detik (`CACHE_TTL_MS`). Query ke Supabase hanya dilakukan saat cache kedaluwarsa atau terjadi update threshold melalui API (cache langsung di-invalidate secara instan).
+
+### 2. Smart Filtering & Deadband Logging (Sensor Log Cache)
+Backend menyaring log sensor sebelum disimpan ke database Supabase melalui algoritma *Deadband filtering*:
+* Data sensor hanya akan disimpan ke tabel `sensor_logs` jika memenuhi salah satu kondisi berikut:
+  - Suhu berubah lebih dari **0.5°C** (`TEMP_DELTA`).
+  - Kelembapan berubah lebih dari **1.0%** (`HUM_DELTA`).
+  - Status relay berubah (`ON` ↔ `OFF`).
+  - Mode operasi perangkat berubah (`auto`, `manual`, `offline`).
+  - Interval waktu detak jantung (*heartbeat*) telah mencapai **5 menit** (`HEARTBEAT_INTERVAL_MS`), bertujuan untuk menjaga kontinuitas grafik di UI.
+* Mengurangi penyimpanan database hingga **90%** tanpa kehilangan data historis yang penting.
+
+### 3. Online Status Throttling
+* Status keaktifan perangkat (`last_seen` dan `is_online`) di database diperbarui secara berkala maksimal **1 menit sekali** (`LAST_SEEN_INTERVAL_MS`), mencegah spam penulisan (*write-heavy*) ke Supabase.
+
+---
+
+## 🚨 Pendeteksi Perangkat Offline & Push Notification
+
+### 1. Offline Detector Job
+* Berjalan di latar belakang setiap 5 menit.
+* Memindai perangkat di database yang berstatus `is_online = true` namun `last_seen` berumur lebih dari 5 menit lalu.
+* Jika ditemukan, secara otomatis memperbarui status perangkat menjadi offline di database dan memicu push notification darurat ke pemilik perangkat.
+
+### 2. Anti-Spam Push Notification (OneSignal Integration)
+* **Koneksi**: Integrasi langsung ke OneSignal menggunakan API REST resmi.
+* **Anti-Spam Guard (Cooldown)**: Setiap notifikasi yang sama (misal peringatan sensor kering/panas atau status offline) memiliki *cooldown time* (seperti 30 menit atau 1 jam) yang dikelola di Redis / In-Memory Map agar pengguna tidak dibanjiri spam push notification.
+* **Notification Stacking & Threading**: Menggunakan `android_group`, `thread_id`, dan `collapse_id` dengan nama `jamur_monitoring_group` untuk mengelompokkan notifikasi secara rapi di notification tray Android & iOS (seperti gaya chat WhatsApp).
+
+---
+
+## 📋 Prasyarat Layanan Cloud
+
+Pastikan Anda memiliki akun dan konfigurasi untuk layanan-layanan berikut:
 
 | Layanan | Keterangan |
 |---|---|
-| [Supabase](https://supabase.com) | Database PostgreSQL (gratis) |
-| [HiveMQ Cloud](https://www.hivemq.com/mqtt-cloud-broker/) | MQTT Broker TLS (gratis) |
-| [Upstash Redis](https://upstash.com) | Redis untuk BullMQ queue (gratis) |
-| Node.js >= 18 | Runtime JavaScript |
+| [Supabase](https://supabase.com) | Database PostgreSQL utama (gratis) |
+| [HiveMQ Cloud](https://www.hivemq.com/mqtt-cloud-broker/) | MQTT Broker TLS aman port 8883 (gratis) |
+| [Upstash Redis](https://upstash.com) | Redis Cloud untuk antrian BullMQ (gratis) |
+| [OneSignal](https://onesignal.com) | Platform Push Notification ke Aplikasi Mobile |
+| Node.js >= 18 | Runtime JavaScript lokal |
 
 ---
 
@@ -49,521 +104,499 @@ Pastikan sudah memiliki akun dan konfigurasi berikut:
 ### 1. Clone & Install Dependencies
 
 ```bash
+git clone <repository-url>
+cd backend-jamur
 npm install
 ```
 
 ### 2. Setup Environment Variables
 
-Buat file `.env` di root folder, lalu isi dengan nilai dari dashboard masing-masing layanan:
+Buat file `.env` di root folder aplikasi, lalu isi konfigurasi berikut:
 
 ```env
-# Supabase — ambil dari: Project Settings > API
-SUPABASE_URL=https://xxxxxxxxxxxxxxxx.supabase.co
-SUPABASE_SERVICE_KEY=sb_secret_xxxxxxxxxxxxxxxx
+# 💻 Server Configuration
+PORT=3000
+IS_BACKUP_SERVER=false                  # Set 'true' jika ini dideploy ke server VPS Backup
+PRIMARY_SERVER_URL=https://jamur-backend.up.railway.app # URL Primary Server (diperlukan jika ini Backup Server)
+FAILOVER_PING_INTERVAL_MS=10000         # Interval cek primary server (dalam milidetik, default 10 detik)
 
-# HiveMQ Cloud — ambil dari: Clusters > MQTT Credentials
+# ⚡ Supabase Configuration (Ambil dari: Project Settings > API)
+SUPABASE_URL=https://xxxxxxxxxxxxxxxx.supabase.co
+SUPABASE_SERVICE_KEY=sb_secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 📡 HiveMQ Cloud MQTT Broker (Ambil dari: Clusters > MQTT Credentials & Connection Settings)
 MQTT_BROKER_URL=mqtts://xxxxxxxxxxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud:8883
 MQTT_PORT=8883
 MQTT_USERNAME=username_hivemq_kamu
 MQTT_PASSWORD=password_hivemq_kamu
 
-# Upstash Redis — ambil dari: Database > Details > Connection URL
+# 🔴 Upstash Redis Connection (Ambil dari: Database > Details > Connection URL)
 REDIS_URL=rediss://default:xxxxxxxx@xxxx.upstash.io:6379
+
+# 🔔 OneSignal Push Notification (Ambil dari: Settings > Keys & IDs)
+ONESIGNAL_APP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ONESIGNAL_REST_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-> ⚠️ **Jangan commit file `.env` ke Git!** File ini sudah tercantum di `.gitignore`.
+> ⚠️ **PENTING**: Jangan pernah melakukan commit file `.env` ke Git! File ini sudah otomatis diabaikan di file `.gitignore`.
 
-### 3. Setup Database Supabase
+### 3. Setup Database Supabase (Skema Tabel & Stored Procedure)
 
-Buat tabel-tabel berikut di Supabase SQL Editor:
+Jalankan perintah SQL berikut di dashboard **Supabase > SQL Editor**:
 
 ```sql
--- Tabel perangkat ESP32
+-- 1. TABEL UTAMA: Perangkat ESP32
 CREATE TABLE devices (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id TEXT UNIQUE NOT NULL,       -- e.g. "esp32-01"
-    label TEXT,                           -- nama display e.g. "Kumbung A"
-    location TEXT,
-    claim_code TEXT UNIQUE,               -- kode klaim uppercase, e.g. "ABC123"
+    label TEXT,                           -- nama display e.g. "Kumbung Barat"
+    location TEXT,                        -- lokasi penempatan
+    claim_code TEXT UNIQUE,               -- kode klaim huruf kapital, e.g. "JAMUR01"
     claimed_by UUID REFERENCES auth.users(id),
     claimed_at TIMESTAMPTZ,
     is_online BOOLEAN DEFAULT false,
-    last_seen TIMESTAMPTZ
+    last_seen TIMESTAMPTZ,
+    current_mode TEXT DEFAULT 'auto'      -- mode kerja aktif: auto, manual, offline
 );
 
--- Tabel log sensor DHT22
+-- 2. TABEL LOG: Riwayat Sensor & Log Aksi
 CREATE TABLE sensor_logs (
     id BIGSERIAL PRIMARY KEY,
     device_id TEXT NOT NULL,
     temperature FLOAT,
     humidity FLOAT,
-    relay_state TEXT,
-    event TEXT,
-    note TEXT,
+    relay_state BOOLEAN DEFAULT false,    -- true = ON, false = OFF
+    mode TEXT DEFAULT 'auto',             -- snapshot mode kerja saat log terekam
+    event TEXT,                           -- event penting (e.g. "manual_stop", "system_on")
+    note TEXT,                            -- catatan tambahan
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Tabel threshold per device
+-- 3. TABEL CONFIG: Batas Sensor Otomatisasi
 CREATE TABLE thresholds (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id TEXT UNIQUE NOT NULL,
-    temp_max FLOAT NOT NULL DEFAULT 30.0,    -- suhu max sebelum relay ON
-    hum_max FLOAT NOT NULL DEFAULT 85.0,     -- kelembapan max sebelum relay ON
+    temp_max FLOAT NOT NULL DEFAULT 30.0,    -- suhu maks sebelum pompa ON
+    hum_max FLOAT NOT NULL DEFAULT 80.0,     -- kelembapan maks sebelum pompa ON
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Tabel jadwal penyiraman
+-- 4. TABEL JADWAL: Jadwal Penyiraman BullMQ
 CREATE TABLE schedules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id TEXT NOT NULL,
     label TEXT,
-    cron TEXT NOT NULL,          -- contoh: "0 6 * * *" = setiap hari jam 06:00
+    cron TEXT NOT NULL,          -- cron format: "menit jam hari bulan hari-minggu"
     duration_s INTEGER NOT NULL, -- durasi penyiraman dalam detik
-    bull_job_id TEXT,            -- referensi job ID di BullMQ
+    bull_job_id TEXT,            -- ID job BullMQ untuk kontrol sinkronisasi
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- 5. FUNCTION: Rata-rata Harian (RPC Function)
+CREATE OR REPLACE FUNCTION get_daily_average(p_device_id TEXT, p_days INT)
+RETURNS TABLE(day DATE, avg_temp NUMERIC, avg_hum NUMERIC) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        created_at::DATE AS day,
+        ROUND(AVG(temperature)::NUMERIC, 1) AS avg_temp,
+        ROUND(AVG(humidity)::NUMERIC, 1) AS avg_hum
+    FROM sensor_logs
+    WHERE device_id = p_device_id
+      AND created_at >= NOW() - (p_days || ' days')::INTERVAL
+      AND temperature IS NOT NULL
+      AND humidity IS NOT NULL
+    GROUP BY created_at::DATE
+    ORDER BY day DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 6. FUNCTION: Rata-rata Per Jam (RPC Function)
+CREATE OR REPLACE FUNCTION get_hourly_average(p_device_id TEXT, p_days INT)
+RETURNS TABLE(hour TIMESTAMPTZ, avg_temp NUMERIC, avg_hum NUMERIC) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        date_trunc('hour', created_at) AS hour,
+        ROUND(AVG(temperature)::NUMERIC, 1) AS avg_temp,
+        ROUND(AVG(humidity)::NUMERIC, 1) AS avg_hum
+    FROM sensor_logs
+    WHERE device_id = p_device_id
+      AND created_at >= NOW() - (p_days || ' days')::INTERVAL
+      AND temperature IS NOT NULL
+      AND humidity IS NOT NULL
+    GROUP BY date_trunc('hour', created_at)
+    ORDER BY hour DESC;
+END;
+$$ LANGUAGE plpgsql;
 ```
 
-### 4. Jalankan Server
+### 4. Jalankan Server Secara Lokal
 
 ```bash
-# Mode development (auto-restart saat file berubah)
+# Jalankan mode Development (Auto-restart via nodemon)
 npm run dev
 
-# Mode production
+# Jalankan mode Production
 npm start
 ```
 
-Server berjalan di `http://localhost:3000`.
+Server akan aktif pada port `http://localhost:3000` (atau sesuai konfigurasi env `PORT`).
 
 ---
 
-## 🚀 Deploy ke Railway
+## 🚀 Panduan Deployment
 
-Railway adalah platform cloud yang memudahkan deploy aplikasi Node.js hanya dalam beberapa menit, tanpa perlu konfigurasi server manual.
+### A. Deploy ke Railway (Sebagai Primary Server)
+1. Hubungkan repository GitHub Anda ke [Railway.app](https://railway.app).
+2. Buat Project Baru dan pilih **Deploy dari GitHub**.
+3. Di tab **Variables**, masukkan semua Environment Variables seperti isi file `.env` di atas (kecuali `PORT` karena dikelola otomatis oleh Railway).
+4. Klik **Generate Domain** di tab **Settings > Networking** untuk mendapatkan URL server publik (contoh: `https://jamur-backend.up.railway.app`).
 
-### Langkah 1 — Push Code ke GitHub
-
-Pastikan kodenya sudah ada di GitHub terlebih dahulu.
-
-```bash
-git add .
-git commit -m "feat: ready for railway deployment"
-git push origin main
-```
-
-> ⚠️ Pastikan file `.env` **tidak ikut ter-push** (sudah dikecualikan di `.gitignore`).
-
----
-
-### Langkah 2 — Buat Project di Railway
-
-1. Buka [railway.app](https://railway.app) dan login (bisa pakai akun GitHub)
-2. Klik **New Project**
-3. Pilih **Deploy from GitHub repo**
-4. Pilih repository backend kamu
-5. Railway akan otomatis mendeteksi bahwa ini adalah aplikasi Node.js
-
----
-
-### Langkah 3 — Set Environment Variables
-
-Ini adalah langkah **paling penting**. Tanpa ini, server tidak bisa terhubung ke Supabase, MQTT, atau Redis.
-
-Buka tab **Variables** di dashboard Railway project kamu, lalu klik **New Variable** dan masukkan satu per satu:
-
-| Variable | Deskripsi | Ambil dari mana |
-|---|---|---|
-| `SUPABASE_URL` | URL project Supabase | Supabase → Project Settings → API |
-| `SUPABASE_SERVICE_KEY` | Service role key Supabase | Supabase → Project Settings → API |
-| `MQTT_BROKER_URL` | URL broker HiveMQ Cloud | HiveMQ → Clusters → Connection Settings |
-| `MQTT_PORT` | Port MQTT, isi `8883` | Selalu `8883` untuk HiveMQ Cloud TLS |
-| `MQTT_USERNAME` | Username HiveMQ | HiveMQ → Clusters → Credentials |
-| `MQTT_PASSWORD` | Password HiveMQ | HiveMQ → Clusters → Credentials |
-| `REDIS_URL` | URL koneksi Redis Upstash | Upstash → Database → Details → Connection URL |
-
-> ⚠️ **Jangan tambahkan variabel `PORT`** — Railway sudah menyediakan nilai ini secara otomatis. Kalau ditambahkan manual, bisa konflik.
-
-Kamu juga bisa klik **Raw Editor** untuk paste semua variabel sekaligus dari file `.env` lokal kamu (hapus baris komentar `#` terlebih dahulu).
-
----
-
-### Langkah 4 — Tunggu Deploy Selesai
-
-Setelah variabel diisi, Railway akan otomatis men-trigger deployment ulang. Pantau prosesnya di tab **Deployments**.
-
-Kalau semua berjalan lancar, kamu akan melihat log seperti ini:
-```
-[MQTT] Terhubung ke HiveMQ Cloud
-[Server] Running on port 8080
-```
-
-> 💡 Port yang tampil mungkin bukan 3000, karena Railway assign port-nya sendiri. Itu normal dan sudah ditangani di kode.
-
----
-
-### Langkah 5 — Ambil URL Publik
-
-Setelah deploy berhasil:
-1. Buka tab **Settings** di Railway project
-2. Di bagian **Networking**, klik **Generate Domain**
-3. Railway akan memberi URL publik seperti: `https://nama-project-kamu.up.railway.app`
-
-URL inilah yang dipakai sebagai **Base URL** di aplikasi Flutter kamu, menggantikan `http://localhost:3000`.
-
----
-
-### ✅ Checklist Sebelum Deploy
-
-- [ ] File `.env` sudah **tidak** masuk ke Git (`git status` tidak menampilkan `.env`)
-- [ ] Semua 7 environment variables sudah diisi di Railway
-- [ ] Repository sudah di-push ke GitHub (branch `main`)
-- [ ] Akun Supabase, HiveMQ, dan Upstash masih aktif
+### B. Deploy ke VPS (Sebagai Backup Server)
+1. Siapkan server VPS (Ubuntu/Debian) dengan Node.js >= 18 dan PM2 terinstall.
+2. Clone repository, jalankan `npm install`.
+3. Set file `.env` dengan variabel `IS_BACKUP_SERVER=true` dan isikan `PRIMARY_SERVER_URL` dengan URL Railway yang didapatkan dari langkah di atas.
+4. Jalankan server menggunakan PM2 agar berjalan di latar belakang:
+   ```bash
+   pm2 start src/index.js --name backend-jamur-backup
+   pm2 save
+   pm2 startup
+   ```
 
 ---
 
 ## 🔌 API Reference
 
-Base URL (lokal): `http://localhost:3000/api`
-Base URL (production): `https://nama-project-kamu.up.railway.app/api`
+Base URL (Development): `http://localhost:3000/api`  
+Base URL (Production): `https://jamur-backend.up.railway.app/api`
 
-> ⚠️ **Rate Limiting**: Semua endpoint dibatasi **100 request/menit per IP**. Endpoint trigger siram manual dibatasi lebih ketat: **5 request/menit**.
-
----
-
-### 📱 Device
-
-#### Klaim Device (Pasangkan Device ke Akun User)
-
-```
-POST /api/device/claim
-```
-
-Dipanggil setelah user berhasil register/login, untuk menghubungkan perangkat fisik ke akun user.
-
-**Request Body:**
-```json
-{
-    "claim_code": "ABC123",
-    "user_id": "uuid-user-dari-supabase-auth"
-}
-```
-
-**Response Sukses (200):**
-```json
-{
-    "message": "Device berhasil diklaim",
-    "device": {
-        "device_id": "esp32-01",
-        "label": "Kumbung Jamur 1",
-        "location": "Ruang A"
-    }
-}
-```
-
-**Kemungkinan Error:**
-| Status | Pesan | Penyebab |
-|---|---|---|
-| 400 | `claim_code dan user_id wajib diisi` | Body tidak lengkap |
-| 404 | `Kode tidak ditemukan` | `claim_code` salah atau tidak terdaftar |
-| 409 | `Device sudah diklaim oleh pengguna lain` | Device sudah dimiliki orang lain |
-| 409 | `Anda sudah memiliki device terdaftar` | User ini sudah pernah klaim device lain |
+> 🛡️ **Rate Limiting**:
+> * Global rate limit untuk semua API: **100 request/menit per IP**.
+> * Rate limit ketat untuk trigger siram manual: **5 request/menit per IP** (menghindari banjir air pada kumbung).
 
 ---
 
-#### Ambil Device Milik User
+### 📱 Device Management
 
-```
-GET /api/device/my-device/:userId
-```
+#### 1. Klaim Device Baru (Pairing)
+Menghubungkan kode unik perangkat fisik dengan ID akun pengguna.
+* **Endpoint**: `POST /api/device/claim`
+* **Body Request**:
+  ```json
+  {
+      "claim_code": "JAMUR01",
+      "user_id": "uuid-user-dari-supabase-auth"
+  }
+  ```
+* **Respons Sukses (200)**:
+  ```json
+  {
+      "message": "Device berhasil diklaim",
+      "device": {
+          "device_id": "esp32-01",
+          "label": "Kumbung Barat",
+          "location": "Sektor A"
+      }
+  }
+  ```
 
-**Contoh:**
-```
-GET /api/device/my-device/550e8400-e29b-41d4-a716-446655440000
-```
-
-**Response Sukses (200):**
-```json
-{
-    "device_id": "esp32-01",
-    "label": "Kumbung Jamur 1",
-    "location": "Ruang A",
-    "is_online": true,
-    "last_seen": "2026-04-08T10:00:00Z"
-}
-```
-
----
-
-### 🌡️ Threshold
-
-Atur batas suhu dan kelembapan yang memicu relay otomatis menyala.
-
-#### Ambil Threshold Saat Ini
-
-```
-GET /api/threshold/:deviceId
-```
-
-**Response Sukses (200):**
-```json
-{
-    "device_id": "esp32-01",
-    "temp_max": 30.0,
-    "hum_max": 85.0,
-    "updated_at": "2026-04-08T09:00:00Z"
-}
-```
-
-#### Update Threshold
-
-```
-POST /api/threshold/:deviceId
-```
-
-**Request Body:**
-```json
-{
-    "temp_max": 32.5,
-    "hum_max": 88.0
-}
-```
-
-**Response Sukses (200):**
-```json
-{
-    "message": "Threshold diupdate",
-    "data": { "device_id": "esp32-01", "temp_max": 32.5, "hum_max": 88.0 }
-}
-```
-
-> 💡 Saat update threshold berhasil, nilai baru langsung dikirim ke ESP32 via MQTT topic `config/threshold` **dan** cache in-memory diperbarui secara instan.
+#### 2. Ambil Info Device Milik User
+* **Endpoint**: `GET /api/device/my-device/:userId`
+* **Respons Sukses (200)**:
+  ```json
+  {
+      "device_id": "esp32-01",
+      "label": "Kumbung Barat",
+      "location": "Sektor A",
+      "is_online": true,
+      "last_seen": "2026-05-24T10:00:00Z"
+  }
+  ```
 
 ---
 
-### 🗓️ Jadwal Penyiraman
+### 🌡️ Threshold Management
 
-#### Ambil Semua Jadwal
+#### 1. Ambil Threshold Aktif
+* **Endpoint**: `GET /api/threshold/:deviceId`
+* **Respons Sukses (200)**:
+  ```json
+  {
+      "device_id": "esp32-01",
+      "temp_max": 30.0,
+      "hum_max": 80.0,
+      "updated_at": "2026-05-24T09:00:00Z"
+  }
+  ```
 
-```
-GET /api/schedule/:deviceId
-```
-
-**Response Sukses (200):**
-```json
-[
-    {
-        "id": "uuid-jadwal",
-        "device_id": "esp32-01",
-        "label": "Siram Pagi",
-        "cron": "0 6 * * *",
-        "duration_s": 60,
-        "is_active": true,
-        "created_at": "2026-04-01T00:00:00Z"
-    }
-]
-```
-
-#### Buat Jadwal Baru
-
-```
-POST /api/schedule/:deviceId
-```
-
-**Request Body:**
-```json
-{
-    "label": "Siram Sore",
-    "cron": "0 17 * * *",
-    "duration_s": 90
-}
-```
-
-> 💡 **Format Cron:** `menit jam hari bulan hari-minggu`
-> - `"0 6 * * *"` → setiap hari jam 06:00
-> - `"0 6,17 * * *"` → setiap hari jam 06:00 dan 17:00
-> - `"*/30 * * * *"` → setiap 30 menit
-
-**Response Sukses (201):**
-```json
-{
-    "id": "uuid-baru",
-    "device_id": "esp32-01",
-    "label": "Siram Sore",
-    "cron": "0 17 * * *",
-    "duration_s": 90,
-    "is_active": true
-}
-```
-
-#### Hapus Jadwal
-
-```
-DELETE /api/schedule/:id
-```
-
-Menghapus jadwal dari database **dan** membatalkan job dari antrian BullMQ.
-
-**Response Sukses (200):**
-```json
-{
-    "message": "Jadwal dihapus"
-}
-```
-
-#### Aktifkan / Nonaktifkan Jadwal (Toggle)
-
-```
-PATCH /api/schedule/:id/toggle
-```
-
-Menonaktifkan jadwal tanpa menghapusnya. Job di BullMQ dihapus sementara, dan bisa diaktifkan kembali kapan saja.
-
-**Response Sukses (200):**
-```json
-{
-    "message": "Jadwal dinonaktifkan",
-    "data": { "id": "uuid", "is_active": false }
-}
-```
-
-#### Trigger Siram Manual (Sekali Jalan)
-
-```
-POST /api/schedule/:deviceId/now
-```
-
-Menyiram sekarang juga tanpa membuat jadwal permanen.
-
-**Request Body (opsional):**
-```json
-{
-    "duration_s": 30
-}
-```
-> Jika body tidak dikirim, default durasi adalah **30 detik**.
-
-**Response Sukses (200):**
-```json
-{
-    "message": "Siram manual 30s dijadwalkan"
-}
-```
-
-#### Hentikan Pompa Sekarang
-
-```
-POST /api/schedule/:deviceId/stop
-```
-
-Mengirim perintah `OFF` ke relay secara langsung via MQTT.
-
-**Response Sukses (200):**
-```json
-{
-    "message": "Pompa dimatikan"
-}
-```
+#### 2. Update Threshold
+Memperbarui batas threshold di DB dan langsung mengirimkan pembaruan ke ESP32 secara instan via MQTT.
+* **Endpoint**: `POST /api/threshold/:deviceId`
+* **Body Request**:
+  ```json
+  {
+      "temp_max": 31.5,
+      "hum_max": 85.0
+  }
+  ```
+* **Respons Sukses (200)**:
+  ```json
+  {
+      "message": "Threshold diupdate",
+      "data": { "device_id": "esp32-01", "temp_max": 31.5, "hum_max": 85.0 }
+  }
+  ```
 
 ---
 
-### 📊 Riwayat Sensor
+### 🗓️ Jadwal & Kontrol Penyiraman
 
-#### Ambil Data Sensor Terbaru
+#### 1. Ambil Semua Jadwal Perangkat
+* **Endpoint**: `GET /api/schedule/:deviceId`
+* **Respons Sukses (200)**:
+  ```json
+  [
+      {
+          "id": "uuid-jadwal-1",
+          "device_id": "esp32-01",
+          "label": "Siram Pagi Hari",
+          "cron": "0 6 * * *",
+          "duration_s": 60,
+          "is_active": true,
+          "created_at": "2026-05-24T08:00:00Z"
+      }
+  ]
+  ```
 
-```
-GET /api/history/:deviceId?limit=100
-```
+#### 2. Buat Jadwal Penyiraman Baru
+Menambahkan jadwal ke DB dan mendaftarkannya sebagai antrian *repeatable job* di BullMQ.
+* **Endpoint**: `POST /api/schedule/:deviceId`
+* **Body Request**:
+  ```json
+  {
+      "label": "Siram Sore",
+      "cron": "0 17 * * *",
+      "duration_s": 45
+  }
+  ```
+* **Respons Sukses (210/201)**:
+  ```json
+  {
+      "id": "uuid-jadwal-baru",
+      "device_id": "esp32-01",
+      "label": "Siram Sore",
+      "cron": "0 17 * * *",
+      "duration_s": 45,
+      "is_active": true
+  }
+  ```
 
-| Query Param | Default | Maks | Keterangan |
-|---|---|---|---|
-| `limit` | 100 | 500 | Jumlah data yang diambil |
+#### 3. Hapus Jadwal
+Menghapus permanen jadwal dari database dan membatalkan repeatable job dari BullMQ.
+* **Endpoint**: `DELETE /api/schedule/:id`
+* **Respons Sukses (200)**:
+  ```json
+  { "message": "Jadwal dihapus" }
+  ```
 
-**Response Sukses (200):**
-```json
-[
-    {
-        "temperature": 28.5,
-        "humidity": 82.3,
-        "relay_state": "OFF",
-        "created_at": "2026-04-08T10:00:00Z"
-    }
-]
-```
+#### 4. Toggle Jadwal (Aktif / Nonaktif)
+Menghentikan eksekusi jadwal sementara waktu di BullMQ tanpa menghapus data jadwal dari database.
+* **Endpoint**: `PATCH /api/schedule/:id/toggle`
+* **Respons Sukses (200)**:
+  ```json
+  {
+      "message": "Jadwal dinonaktifkan",
+      "data": { "id": "uuid-jadwal-1", "is_active": false }
+  }
+  ```
 
-#### Rata-rata Harian
+#### 5. Trigger Siram Manual (Sekali Jalan)
+Memicu penyiraman instan di luar jadwal reguler.
+* **Endpoint**: `POST /api/schedule/:deviceId/now`
+* **Body Request** (Opsional):
+  ```json
+  { "duration_s": 30 }
+  ```
+* **Respons Sukses (200)**:
+  ```json
+  { "message": "Siram manual 30s dijadwalkan" }
+  ```
 
-```
-GET /api/history/:deviceId/daily?days=7
-```
+#### 6. Hentikan Pompa Secara Paksa
+Segera mengirimkan sinyal relay `OFF` via MQTT untuk mematikan pompa secara langsung.
+* **Endpoint**: `POST /api/schedule/:deviceId/stop`
+* **Respons Sukses (200)**:
+  ```json
+  { "message": "Pompa dimatikan" }
+  ```
 
-Mengambil rata-rata suhu dan kelembapan per hari (memanggil stored procedure `get_daily_average` di Supabase).
+---
 
-| Query Param | Default | Keterangan |
-|---|---|---|
-| `days` | 7 | Jumlah hari ke belakang |
+### ⚙️ Mode Operasi Perangkat
+
+ESP32 mendukung 3 mode operasi utama:
+* `auto`: Pompa dikendalikan secara otomatis berdasarkan data sensor SHT31.
+* `manual`: Logika otomatis dimatikan, kontrol pompa sepenuhnya diatur manual lewat API/Aplikasi.
+* `offline`: Mode darurat jika terputus dari jaringan cloud (logika auto berjalan mandiri di hardware lokal tanpa mempublikasikan data MQTT).
+
+#### 1. Ambil Mode Kerja Aktif
+* **Endpoint**: `GET /api/mode/:deviceId`
+* **Respons Sukses (200)**:
+  ```json
+  {
+      "device_id": "esp32-01",
+      "current_mode": "auto",
+      "is_online": true,
+      "last_seen": "2026-05-24T10:00:00Z"
+  }
+  ```
+
+#### 2. Ubah Mode Kerja
+Mengirim perintah ganti mode ke hardware via MQTT dan menyimpan perubahannya di database.
+* **Endpoint**: `POST /api/mode/:deviceId`
+* **Body Request**:
+  ```json
+  { "mode": "manual" }
+  ```
+* **Respons Sukses (200)**:
+  ```json
+  {
+      "message": "Mode berhasil diubah ke manual",
+      "mode": "manual",
+      "changed": true
+  }
+  ```
+
+---
+
+### 📊 Riwayat Sensor & Tren Kondisi
+
+#### 1. Ambil Log Sensor Terbaru
+Mengambil log real-time sensor terbaru (termasuk filter in-memory deadband).
+* **Endpoint**: `GET /api/history/:deviceId?limit=100`
+* **Respons Sukses (200)**:
+  ```json
+  [
+      {
+          "temperature": 28.5,
+          "humidity": 82.3,
+          "relay_state": false,
+          "mode": "auto",
+          "created_at": "2026-05-24T10:15:00Z"
+      }
+  ]
+  ```
+
+#### 2. Ambil Rata-rata Sensor Harian (RPC get_daily_average)
+Untuk visualisasi grafik jangka panjang di aplikasi Flutter.
+* **Endpoint**: `GET /api/history/:deviceId/daily?days=7`
+* **Respons Sukses (200)**:
+  ```json
+  [
+      {
+          "day": "2026-05-24",
+          "avg_temp": 28.1,
+          "avg_hum": 83.4
+      }
+  ]
+  ```
+
+#### 3. Ambil Rata-rata Sensor Per Jam (RPC get_hourly_average)
+Untuk visualisasi grafik analitis jangka menengah/harian.
+* **Endpoint**: `GET /api/history/:deviceId/hourly?days=7`
+* **Respons Sukses (200)**:
+  ```json
+  [
+      {
+          "hour": "2026-05-24T10:00:00.000Z",
+          "avg_temp": 28.5,
+          "avg_hum": 82.9
+      }
+  ]
+  ```
 
 ---
 
 ## 📡 MQTT Topics
 
-Komunikasi antara backend dan ESP32 menggunakan MQTT over TLS (mqtts).
+Sistem komunikasi backend dan ESP32 menggunakan protokol MQTT over TLS (mqtts) di port 8883.
 
 | Topic | Arah | Payload | Keterangan |
 |---|---|---|---|
-| `sensor/dht22` | ESP32 → Backend | `{"device_id":"esp32-01","temp":28.5,"hum":82.3}` | Data sensor real-time |
-| `config/threshold` | Backend → ESP32 | `{"temp":30.0,"hum":85.0}` | Update batas threshold |
-| `cmd/relay/{deviceId}` | Backend → ESP32 | `"ON"` atau `"OFF"` | Perintah nyala/mati relay |
+| `sensor/dht22` | ESP32 → Backend | `{"device_id":"esp32-01","temp":28.5,"hum":82.3,"mode":"auto","relay":false}` | Laporan status sensor & hardware berkala |
+| `config/threshold/{deviceId}` | Backend → ESP32 | `{"temp":31.5,"hum":85.0}` | Sinkronisasi perubahan threshold sensor |
+| `cmd/relay/{deviceId}` | Backend → ESP32 | `"ON"` atau `"OFF"` | Perintah langsung kontrol relay pompa |
+| `cmd/mode/{deviceId}` | Backend → ESP32 | `"auto"`, `"manual"`, atau `"offline"` | Perintah langsung untuk mengubah mode operasi |
 
 ---
 
-## 🔁 Sistem Antrian (BullMQ)
+## 🔁 Antrian Kerja (BullMQ) & Recovery Sistem
 
-Penyiraman terjadwal diproses via **BullMQ** dengan Redis (Upstash) sebagai backing store. Ini memastikan jadwal tetap berjalan meskipun server restart.
+Sistem penjadwalan dikelola secara hybrid menggunakan **BullMQ** dan **Supabase**. Hal ini memecahkan masalah hilangnya repeatable job jika server mengalami restart/deployment ulang.
 
-**Alur Worker:**
-1. Job masuk ke queue `irrigation`
-2. Worker memerintahkan relay `ON` via MQTT
-3. Worker menunggu selama `duration_s` detik
-4. Worker memerintahkan relay `OFF` via MQTT
+### Alur Kerja BullMQ Worker
+1. Job repeatable terpicu sesuai jadwal *cron* atau instan dari trigger siram manual.
+2. Worker BullMQ mengambil job dari Redis:
+   - Mengirim perintah relay `ON` ke ESP32 via MQTT.
+   - Mengirimkan push notification "Penyiraman Dimulai" via OneSignal ke pemilik alat.
+   - Menahan eksekusi (*non-blocking sleep*) selama durasi siram `duration_s`.
+   - Mengirim perintah relay `OFF` ke ESP32 via MQTT saat durasi berakhir.
+
+### Alur Recovery (Schedule Restore)
+Saat server pertama kali menyala (atau setelah failover berpindah ke aktif):
+1. Menghapus semua job antrian lama di Redis demi mencegah tumpang tindih.
+2. Membaca semua data jadwal yang aktif (`is_active = true`) di tabel Supabase.
+3. Mendaftarkan ulang job ke Redis menggunakan pustaka terbaru **BullMQ v5+** (menggunakan format parameter `cron`).
 
 ---
 
 ## 📁 Struktur Folder
 
 ```
-backend/
+backend-jamur/
 ├── src/
-│   ├── index.js              # Entry point, setup Express & rate limiter
+│   ├── index.js              # Entry point utama, Express & rate limit setup
+│   ├── jobs/
+│   │   └── offlineDetector.js# Background job pemeriksa status online perangkat
 │   ├── mqtt/
-│   │   └── mqttClient.js     # Koneksi ke HiveMQ, subscriber sensor, publisher relay
+│   │   └── mqttClient.js     # Koneksi HiveMQ, subscriber sensor, & publisher command
 │   ├── queues/
-│   │   ├── irrigationQueue.js # Definisi queue BullMQ
-│   │   └── irrigationWorker.js# Worker yang memproses job penyiraman
+│   │   ├── irrigationQueue.js# Inisialisasi antrian BullMQ & koneksi Redis Upstash
+│   │   ├── irrigationWorker.js# Worker pengeksekusi siklus pompa ON -> DELAY -> OFF
+│   │   └── scheduleRestore.js# Pemulihan otomatis jadwal aktif dari database saat startup
 │   ├── routes/
-│   │   ├── device.js         # POST /claim, GET /my-device
-│   │   ├── threshold.js      # GET & POST threshold
-│   │   ├── schedule.js       # CRUD jadwal + trigger manual
-│   │   └── history.js        # GET riwayat sensor
-│   └── supabase/
-│       └── client.js         # Inisialisasi Supabase client
-├── .env                      # Variabel lingkungan (jangan di-commit!)
-├── .gitignore
-└── package.json
+│   │   ├── device.js         # API endpoint klaim & info perangkat
+│   │   ├── history.js        # API endpoint riwayat & agregasi sensor (daily/hourly)
+│   │   ├── mode.js           # API endpoint kontrol mode kerja ESP32
+│   │   ├── schedule.js       # API endpoint CRUD jadwal & trigger pompa manual
+│   │   └── threshold.js      # API endpoint pembacaan & modifikasi batas sensor
+│   ├── supabase/
+│   │   └── client.js         # Setup Supabase JS client (Service Role authorization)
+│   └── utils/
+│       ├── failoverManager.js# Pengelola status failover (Primary ↔ Backup Standby)
+│       └── notification.js   # Pengirim OneSignal Push Notification + Cooldown redis
+├── .env                      # File konfigurasi privat (lokal)
+├── .gitignore                # Daftar file terabaikan dari Git
+├── package.json              # Daftar pustaka dependencies & scripts npm
+└── package-lock.json         # Lock file dependencies
 ```
 
 ---
 
-## 🚀 Dependencies Utama
+## 📦 Dependensi Utama
 
-| Package | Versi | Fungsi |
-|---|---|---|
-| `express` | ^5.2.1 | HTTP server & routing |
-| `@supabase/supabase-js` | ^2.101.1 | Client database Supabase |
-| `mqtt` | ^5.15.1 | Koneksi ke MQTT broker |
-| `bullmq` | ^5.73.0 | Job queue penyiraman terjadwal |
-| `ioredis` | ^5.10.1 | Koneksi ke Redis (Upstash) |
-| `express-rate-limit` | ^8.3.2 | Proteksi rate limiting |
-| `dotenv` | ^17.4.1 | Load environment variables |
-| `nodemon` | ^3.1.14 | Auto-restart saat development |
+Detail library penting yang digunakan pada proyek ini:
+
+```json
+"dependencies": {
+  "@supabase/supabase-js": "^2.101.1",
+  "bullmq": "^5.73.0",
+  "dotenv": "^17.4.1",
+  "express": "^5.2.1",
+  "express-rate-limit": "^8.3.2",
+  "ioredis": "^5.10.1",
+  "mqtt": "^5.15.1"
+}
+```
