@@ -109,6 +109,7 @@ router.post('/claim', async (req, res) => {
  * Params: userId — UUID user dari Supabase Auth
  */
 router.get('/my-device/:userId', async (req, res) => {
+    console.log(`[Device Route] Handler berjalan untuk user: ${req.params.userId}`)
     const { data, error } = await supabase
         .from('devices')
         .select('device_id, label, location, is_online, last_seen')

@@ -34,6 +34,7 @@ const supabase = require('../supabase/client')
  * Contoh: GET /api/history/esp32-01?limit=50
  */
 router.get('/:deviceId', async (req, res) => {
+    console.log(`[History Route] Handler berjalan untuk device: ${req.params.deviceId}`)
     // Math.min memastikan limit tidak melebihi 500, sekali pun user kirim nilai lebih besar
     const limit = Math.min(parseInt(req.query.limit) || 100, 500)
 
