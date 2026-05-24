@@ -115,7 +115,10 @@ router.get('/my-device/:userId', async (req, res) => {
         .eq('claimed_by', req.params.userId)
         .single()
 
-    if (error) return res.status(404).json({ error: 'Device tidak ditemukan' })
+    if (error) {
+        console.error('[Device Router] Gagal ambil my-device:', error.message)
+        return res.status(404).json({ error: 'Device tidak ditemukan' })
+    }
     res.json(data)
 })
 
