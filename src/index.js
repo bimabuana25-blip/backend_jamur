@@ -38,6 +38,12 @@ app.set('trust proxy', trustProxyLayers)
 
 app.use(express.json()) // Supaya server bisa membaca body request dalam format JSON
 
+// Middleware logger sederhana untuk membantu memantau request di PM2 logs (terutama saat failover)
+app.use((req, res, next) => {
+    console.log(`[HTTP] ${req.method} ${req.url}`)
+    next()
+})
+
 // =============================================================================
 // RATE LIMITER — Pelindung dari request berlebihan
 // =============================================================================
