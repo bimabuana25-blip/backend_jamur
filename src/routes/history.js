@@ -45,7 +45,10 @@ router.get('/:deviceId', async (req, res) => {
         .order('created_at', { ascending: false }) // Data terbaru di atas
         .limit(limit)
 
-    if (error) return res.status(500).json({ error: error.message })
+    if (error) {
+        console.error('[History Router] Gagal ambil history:', error.message)
+        return res.status(500).json({ error: error.message })
+    }
     res.json(data)
 })
 
