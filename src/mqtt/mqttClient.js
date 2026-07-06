@@ -154,9 +154,9 @@ function connect() {
             // Destructure data sensor. Jika ESP32 tidak kirim device_id, pakai default 'esp32-01'
             // relay dikirim ESP32 sebagai boolean (true = ON, false = OFF) pada key 'relay' atau 'relay_state'
             // mode dikirim ESP32 sebagai string (contoh: "auto", "auto-on", "cooldown", "schedule-on")
-            const { temp, hum, mode, water_flow, water_volume, device_id = 'esp32-01' } = data
+            const { temp, hum, mode, device_id = 'esp32-01' } = data
             const relay_state = data.relay_state ?? data.relay ?? false;
-            console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Flow: ${water_flow} L/min | Volume: ${water_volume} L | Relay: ${relay_state}`)
+            console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Relay: ${relay_state}`)
 
             const now = Date.now();
 
@@ -202,8 +202,6 @@ function connect() {
                     humidity: hum,
                     relay_state: relay_state ?? false,
                     mode: safeMode,   // Simpan snapshot mode ESP32 saat data dikirim
-                    water_flow: (water_flow !== undefined && water_flow !== null) ? Number(water_flow) : 0.0,
-                    water_volume: (water_volume !== undefined && water_volume !== null) ? Number(water_volume) : 0.0
                 })
                 if (insertErr) {
                     console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
