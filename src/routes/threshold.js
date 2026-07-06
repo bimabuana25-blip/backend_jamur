@@ -58,18 +58,25 @@ router.get('/:deviceId', async (req, res) => {
  * Body: { temp_max: number, hum_max: number }
  */
 router.post('/:deviceId', async (req, res) => {
-    const { temp_max, hum_max } = req.body
+    const { temp_min, temp_max, hum_max } = req.body
 
-    // Validasi: kedua nilai threshold wajib dikirim dan bukan null/undefined
-    // Catatan: JANGAN gunakan !temp_max / !hum_max karena nilai 0 dianggap falsy di JS!
+    // Validasi: kedua nilai threshold (temp_max & hum_max) wajib dikirim dan bukan null/undefined
     if (temp_max === undefined || temp_max === null || hum_max === undefined || hum_max === null) {
         return res.status(400).json({ error: 'temp_max dan hum_max wajib diisi' })
     }
 
+    // Jika temp_min tidak dikirim (misalnya request dari Flutter versi lama), beri nilai default 20.0
+    const finalTempMin = (temp_min === undefined || temp_min === null) ? 20.0 : temp_min;
+
     // Simpan nilai baru ke database
     const { data, error } = await supabase
         .from('thresholds')
-        .update({ temp_max, hum_max, updated_at: new Date() })
+        .update({ 
+            temp_min: finalTempMin, 
+            temp_max, 
+            hum_max, 
+            updated_at: new Date() 
+        })
         .eq('device_id', req.params.deviceId)
         .select()
         .single()
@@ -78,7 +85,7 @@ router.post('/:deviceId', async (req, res) => {
 
     // Kirim nilai threshold baru langsung ke ESP32 via MQTT
     // Sekaligus memperbarui cache agar langsung efektif tanpa tunggu TTL
-    publishThreshold(req.params.deviceId, temp_max, hum_max)
+    publishThreshold(req.params.deviceId, finalTempMin, temp_max, hum_max)
 
     res.json({ message: 'Threshold diupdate', data })
 })

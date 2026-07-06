@@ -37,8 +37,7 @@ const TOPIC_MODE = 'cmd/mode'             // Topik dasar untuk mengirim perintah
 // IN-MEMORY CACHE — Penyimpanan Sementara di Memori Server
 // =============================================================================
 // Map ini menyimpan data threshold tiap device agar tidak perlu query DB terus-menerus.
-// Format isi Map: { deviceId → { temp_max, hum_max, cachedAt } }
-// Cache akan kadaluarsa setelah CACHE_TTL_MS milidetik (default 30 detik)
+// Format isi Map: { deviceId → { temp_min, temp_max, hum_max, cachedAt } }
 const thresholdCache = new Map()
 const CACHE_TTL_MS = 30 * 1000  // 30 detik dalam milidetik
 
@@ -47,7 +46,7 @@ const CACHE_TTL_MS = 30 * 1000  // 30 detik dalam milidetik
  * baru query ke database Supabase, lalu simpan hasilnya ke cache.
  *
  * @param {string} deviceId - ID perangkat ESP32
- * @returns {Object|null} Objek { temp_max, hum_max } atau null jika gagal
+ * @returns {Object|null} Objek { temp_min, temp_max, hum_max } atau null jika gagal
  */
 async function getCachedThreshold(deviceId) {
     const cached = thresholdCache.get(deviceId)
@@ -60,7 +59,7 @@ async function getCachedThreshold(deviceId) {
     // Cache miss atau sudah expired — ambil data segar dari Supabase
     const { data, error } = await supabase
         .from('thresholds')
-        .select('temp_max, hum_max')
+        .select('temp_min, temp_max, hum_max')
         .eq('device_id', deviceId)
         .limit(1)
         .maybeSingle()
@@ -75,10 +74,18 @@ async function getCachedThreshold(deviceId) {
         return null
     }
 
+    // Fallback temp_min ke 20.0 jika di db nilainya null
+    const temp_min = (data.temp_min === undefined || data.temp_min === null) ? 20.0 : data.temp_min;
+
     // Simpan hasil query ke cache beserta timestamp saat ini
-    thresholdCache.set(deviceId, { ...data, cachedAt: Date.now() })
+    thresholdCache.set(deviceId, { 
+        temp_min,
+        temp_max: data.temp_max,
+        hum_max: data.hum_max,
+        cachedAt: Date.now() 
+    })
     console.log(`[Cache] Threshold ${deviceId} diperbarui dari DB`)
-    return data
+    return { temp_min, temp_max: data.temp_max, hum_max: data.hum_max }
 }
 // =============================================================================
 
@@ -147,9 +154,9 @@ function connect() {
             // Destructure data sensor. Jika ESP32 tidak kirim device_id, pakai default 'esp32-01'
             // relay dikirim ESP32 sebagai boolean (true = ON, false = OFF) pada key 'relay' atau 'relay_state'
             // mode dikirim ESP32 sebagai string (contoh: "auto", "auto-on", "cooldown", "schedule-on")
-            const { temp, hum, mode, device_id = 'esp32-01' } = data
+            const { temp, hum, mode, water_flow, water_volume, device_id = 'esp32-01' } = data
             const relay_state = data.relay_state ?? data.relay ?? false;
-            console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Relay: ${relay_state}`)
+            console.log(`[MQTT] [${device_id}] Sensor: ${temp}°C | ${hum}% | Flow: ${water_flow} L/min | Volume: ${water_volume} L | Relay: ${relay_state}`)
 
             const now = Date.now();
 
@@ -195,6 +202,8 @@ function connect() {
                     humidity: hum,
                     relay_state: relay_state ?? false,
                     mode: safeMode,   // Simpan snapshot mode ESP32 saat data dikirim
+                    water_flow: (water_flow !== undefined && water_flow !== null) ? Number(water_flow) : 0.0,
+                    water_volume: (water_volume !== undefined && water_volume !== null) ? Number(water_volume) : 0.0
                 })
                 if (insertErr) {
                     console.error('[MQTT] Gagal simpan sensor log:', insertErr.message)
@@ -217,20 +226,31 @@ function connect() {
             // Anti-spam (cooldown 30 menit) kini diurus otomatis oleh sendNotification.
             if (threshold) {
                 const alerts = []
+                let isCold = false
+                let isHot = false
+                let isDry = false
+
                 if (hum < threshold.hum_max) {
                     alerts.push(`Kelembapan saat ini ${hum}% (Batas minimal: ${threshold.hum_max}%)`)
+                    isDry = true
                 }
                 if (temp > threshold.temp_max) {
                     alerts.push(`Suhu saat ini ${temp}°C (Batas maksimal: ${threshold.temp_max}°C)`)
+                    isHot = true
+                } else if (temp < threshold.temp_min) {
+                    alerts.push(`Suhu saat ini ${temp}°C (Batas minimal: ${threshold.temp_min}°C)`)
+                    isCold = true
                 }
 
                 if (alerts.length > 0) {
                     let alertMsg = ''
-                    if (alerts.length === 2) {
+                    if (alerts.length >= 2) {
                         alertMsg = `Peringatan Kumbung! ${alerts.join(' dan ')}`
-                    } else if (hum < threshold.hum_max) {
+                    } else if (isCold) {
+                        alertMsg = `Peringatan Dingin! ${alerts[0]}`
+                    } else if (isDry) {
                         alertMsg = `Peringatan Kering! ${alerts[0]}`
-                    } else {
+                    } else if (isHot) {
                         alertMsg = `Peringatan Panas! ${alerts[0]}`
                     }
 
@@ -277,11 +297,17 @@ function disconnect() {
  * Sekaligus memperbarui cache agar nilai baru langsung efektif.
  *
  * @param {string} deviceId - ID perangkat target
+ * @param {number} tempMin - Batas minimum suhu (°C)
  * @param {number} tempMax - Batas maksimum suhu (°C)
  * @param {number} humMax - Batas maksimum kelembapan (%)
  */
-function publishThreshold(deviceId, tempMax, humMax) {
-    const payload = JSON.stringify({ temp: tempMax, hum: humMax })
+function publishThreshold(deviceId, tempMin, tempMax, humMax) {
+    const payload = JSON.stringify({ 
+        temp_min: tempMin, 
+        temp_max: tempMax, 
+        temp: tempMax, // backward compatibility
+        hum: humMax 
+    })
     // retain: true → ESP32 yang baru connect akan langsung dapat nilai threshold terkini
     if (client) {
         client.publish(`${TOPIC_THRESHOLD_BASE}/${deviceId}`, payload, { qos: 1, retain: true })
@@ -290,7 +316,7 @@ function publishThreshold(deviceId, tempMax, humMax) {
     }
 
     // Perbarui cache langsung agar nilai baru efektif tanpa harus tunggu 30 detik
-    thresholdCache.set(deviceId, { temp_max: tempMax, hum_max: humMax, cachedAt: Date.now() })
+    thresholdCache.set(deviceId, { temp_min: tempMin, temp_max: tempMax, hum_max: humMax, cachedAt: Date.now() })
     console.log(`[Cache] Threshold ${deviceId} diperbarui dari API`)
 }
 
