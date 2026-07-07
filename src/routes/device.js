@@ -123,4 +123,24 @@ router.get('/my-device/:userId', async (req, res) => {
     res.json(data)
 })
 
+/**
+ * GET /api/device/status/:deviceId
+ * -----------------------------------------------------------------------------
+ * Mengambil status keaktifan perangkat (is_online, last_seen) secara real-time.
+ * Params: deviceId — ID perangkat ESP32
+ */
+router.get('/status/:deviceId', async (req, res) => {
+    const { data, error } = await supabase
+        .from('devices')
+        .select('is_online, last_seen')
+        .eq('device_id', req.params.deviceId)
+        .maybeSingle()
+
+    if (error || !data) {
+        console.error('[Device Router] Gagal ambil status:', error ? error.message : 'Not found')
+        return res.status(404).json({ error: 'Device tidak ditemukan' })
+    }
+    res.json(data)
+})
+
 module.exports = router

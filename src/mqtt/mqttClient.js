@@ -131,6 +131,8 @@ function connect() {
         console.log('[MQTT] Terhubung ke HiveMQ Cloud')
         // Mulai "dengarkan" data sensor dari ESP32
         client.subscribe(TOPIC_SENSOR, { qos: 1 })
+        // Mulai "dengarkan" status keaktifan perangkat (LWT)
+        client.subscribe('status/+', { qos: 1 })
     })
 
     /**
@@ -140,6 +142,40 @@ function connect() {
      */
     client.on('message', async (topic, payload) => {
         try {
+            // Proses pesan status LWT (status/+)
+            if (topic.startsWith('status/')) {
+                const device_id = topic.split('/')[1]
+                const status = payload.toString().trim() // "online" atau "offline"
+                console.log(`[MQTT] [LWT] Perangkat ${device_id} berstatus: ${status}`)
+
+                const isOnline = status === 'online'
+                
+                // Update status di Supabase
+                const { data, error } = await supabase.from('devices')
+                    .update({ 
+                        is_online: isOnline, 
+                        last_seen: new Date().toISOString() 
+                    })
+                    .eq('device_id', device_id)
+                    .select('claimed_by')
+                    .maybeSingle()
+
+                if (error) {
+                    console.error(`[MQTT] [LWT] Gagal update status ${device_id} ke DB:`, error.message)
+                } else {
+                    console.log(`[MQTT] [LWT] Berhasil update status ${device_id} ke DB -> is_online: ${isOnline}`)
+                    if (!isOnline && data && data.claimed_by) {
+                        sendNotification(
+                            data.claimed_by,
+                            'Perangkat Offline! 🚨',
+                            `Perangkat IoT Kumbung (${device_id}) terputus dari jaringan atau mati listrik (LWT).`,
+                            3600 // Cooldown 1 jam
+                        );
+                    }
+                }
+                return
+            }
+
             // Hanya proses pesan dari topik sensor, abaikan topik lain
             if (topic !== TOPIC_SENSOR) return
 
