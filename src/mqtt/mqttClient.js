@@ -11,8 +11,8 @@
  * "topik", dan ada yang langganan (subscribe) topik itu untuk menerimanya.
  *
  * Di sistem ini:
- * - ESP32 → PUBLISH data sensor ke topik 'sensor/dht22'
- * - Server → SUBSCRIBE ke 'sensor/dht22' untuk menerima data tersebut
+ * - ESP32 → PUBLISH data sensor ke topik 'sensor/sht31'
+ * - Server → SUBSCRIBE ke 'sensor/sht31' untuk menerima data tersebut
  * - Server → PUBLISH perintah ke 'cmd/relay/{deviceId}' untuk nyala/matiin pompa
  * - Server → PUBLISH config ke 'config/threshold' saat threshold diubah
  *
@@ -28,7 +28,7 @@ const supabase = require('../supabase/client')
 const { sendNotification } = require('../utils/notification')
 
 // Daftar topik MQTT yang digunakan dalam sistem ini
-const TOPIC_SENSOR = 'sensor/dht22'         // Topik untuk menerima data dari ESP32
+const TOPIC_SENSOR = 'sensor/sht31'         // Topik untuk menerima data dari ESP32
 const TOPIC_THRESHOLD_BASE = 'config/threshold' // Topik dasar untuk kirim setting threshold ke ESP32
 const TOPIC_RELAY = 'cmd/relay'            // Topik dasar untuk kontrol relay
 const TOPIC_MODE = 'cmd/mode'             // Topik dasar untuk mengirim perintah ganti mode ke ESP32

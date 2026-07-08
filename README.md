@@ -1,6 +1,6 @@
 # 🍄 Backend IoT Kumbung Jamur
 
-Backend Node.js untuk sistem monitoring dan kontrol otomatis kumbung jamur berbasis IoT. Sistem ini menghubungkan sensor **SHT31 / DHT22** dan relay pada **ESP32** ke aplikasi mobile **Flutter** melalui **MQTT (HiveMQ Cloud)**, dengan penjadwalan penyiraman otomatis menggunakan **BullMQ (Redis)**, sistem push notification anti-spam via **OneSignal**, serta database utama **Supabase**.
+Backend Node.js untuk sistem monitoring dan kontrol otomatis kumbung jamur berbasis IoT. Sistem ini menghubungkan sensor **SHT31** dan relay pada **ESP32** ke aplikasi mobile **Flutter** melalui **MQTT (HiveMQ Cloud)**, dengan penjadwalan penyiraman otomatis menggunakan **BullMQ (Redis)**, sistem push notification anti-spam via **OneSignal**, serta database utama **Supabase**.
 
 Aplikasi ini dirancang dengan arsitektur **High Availability (Dual Server Failover)** dan **In-Memory Optimizations** untuk memastikan keandalan sistem yang optimal dan efisiensi resource yang sangat tinggi.
 
@@ -549,7 +549,7 @@ Sistem komunikasi backend dan ESP32 menggunakan protokol MQTT over TLS (mqtts) d
 
 | Topic | Arah | Payload | Keterangan |
 |---|---|---|---|
-| `sensor/dht22` | ESP32 → Backend | `{"device_id":"esp32-01","temp":28.5,"hum":82.3,"mode":"auto","relay":false}` | Laporan status sensor & hardware berkala |
+| `sensor/sht31` | ESP32 → Backend | `{"device_id":"esp32-01","temp":28.5,"hum":82.3,"mode":"auto","relay":false}` | Laporan status sensor & hardware berkala |
 | `config/threshold/{deviceId}` | Backend → ESP32 | `{"temp":31.5,"hum":85.0}` | Sinkronisasi perubahan threshold sensor |
 | `cmd/relay/{deviceId}` | Backend → ESP32 | `"ON"` atau `"OFF"` | Perintah langsung kontrol relay pompa |
 | `cmd/mode/{deviceId}` | Backend → ESP32 | `"auto"`, `"manual"`, atau `"offline"` | Perintah langsung untuk mengubah mode operasi |

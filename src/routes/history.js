@@ -2,7 +2,7 @@
  * =============================================================================
  * ROUTE: HISTORY — Riwayat Data Sensor
  * =============================================================================
- * File ini mengurus pengambilan data historis dari sensor DHT22.
+ * File ini mengurus pengambilan data historis dari sensor SHT31.
  * Data historis berguna untuk:
  * - Menampilkan grafik suhu & kelembapan di aplikasi Flutter
  * - Melihat tren kondisi kumbung jamur dalam beberapa hari terakhir
