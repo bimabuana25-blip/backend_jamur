@@ -81,6 +81,7 @@ app.use('/api/schedule/:deviceId/now', manualIrrigationLimiter) // Extra ketat u
 app.use('/api/schedule', require('./routes/schedule'))      // Kelola jadwal penyiraman
 app.use('/api/device', require('./routes/device'))          // Klaim & kelola perangkat
 app.use('/api/mode', require('./routes/mode'))              // Kontrol mode operasi ESP32 (auto/manual/offline)
+app.use('/api/latency', require('./routes/latency'))        // Tes latensi dari backend asli ke MQTT broker
 // =============================================================================
 
 // Endpoint health check untuk platform deployment seperti Fly.io / Railway

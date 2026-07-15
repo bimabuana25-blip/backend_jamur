@@ -95,6 +95,7 @@ async function getCachedThreshold(deviceId) {
 // Map ini mencatat status terakhir agar tidak spam ke Supabase
 const sensorLogCache = new Map() // { temp, hum, relay_state, mode, lastSavedAt }
 const lastSeenCache = new Map()  // timestamp terakhir kali device laporan online
+const pendingPings = new Map()   // Menyimpan callback untuk pencocokan pingId latency test
 
 const TEMP_DELTA = 0.5;         // Perubahan suhu minimal untuk disimpan
 const HUM_DELTA = 1.0;          // Perubahan kelembapan minimal untuk disimpan
@@ -133,6 +134,8 @@ function connect() {
         client.subscribe(TOPIC_SENSOR, { qos: 1 })
         // Mulai "dengarkan" status keaktifan perangkat (LWT)
         client.subscribe('status/+', { qos: 1 })
+        // Mulai "dengarkan" pesan ping latensi
+        client.subscribe('latency/test/ping', { qos: 1 })
     })
 
     /**
@@ -142,6 +145,20 @@ function connect() {
      */
     client.on('message', async (topic, payload) => {
         try {
+            // Proses ping latensi loopback backend
+            if (topic === 'latency/test/ping') {
+                try {
+                    const data = JSON.parse(payload.toString())
+                    const { pingId } = data
+                    const callback = pendingPings.get(pingId)
+                    if (callback) {
+                        callback(Date.now())
+                        pendingPings.delete(pingId)
+                    }
+                } catch (e) {}
+                return
+            }
+
             // Proses pesan status LWT (status/+)
             if (topic.startsWith('status/')) {
                 const device_id = topic.split('/')[1]
@@ -387,4 +404,39 @@ function publishMode(deviceId, mode) {
     }
 }
 
-module.exports = { connect, disconnect, publishThreshold, publishRelay, publishMode }
+/**
+ * Mengukur latensi RTT (Round Trip Time) antara server backend ini dengan MQTT Broker HiveMQ Cloud.
+ * @returns {Promise<number>} Latensi RTT dalam milidetik
+ */
+function measureLatency() {
+    return new Promise((resolve, reject) => {
+        if (!client || !client.connected) {
+            return reject(new Error('Klien MQTT tidak terhubung ke broker'))
+        }
+
+        const pingId = Math.random().toString(36).substring(7)
+        const startTime = Date.now()
+
+        // Batasi tunggu maksimal 5 detik
+        const timeout = setTimeout(() => {
+            pendingPings.delete(pingId)
+            reject(new Error('Pengujian latensi MQTT timeout (5 detik)'))
+        }, 5000)
+
+        pendingPings.set(pingId, (endTime) => {
+            clearTimeout(timeout)
+            resolve(endTime - startTime)
+        })
+
+        const payload = JSON.stringify({ pingId })
+        client.publish('latency/test/ping', payload, { qos: 1 }, (err) => {
+            if (err) {
+                clearTimeout(timeout)
+                pendingPings.delete(pingId)
+                reject(err)
+            }
+        });
+    });
+}
+
+module.exports = { connect, disconnect, publishThreshold, publishRelay, publishMode, measureLatency }

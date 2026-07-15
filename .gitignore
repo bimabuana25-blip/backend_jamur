@@ -13,3 +13,7 @@ npm-debug.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Temporary test/scratch files
+test-latency-standalone.js
+scratch-check.js
